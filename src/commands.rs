@@ -20,6 +20,8 @@ pub enum Command {
     Undo,
     Redo,
     Language,
+    CheckUpdates,
+    UpdateResult,
 }
 
 impl Command {
@@ -38,6 +40,8 @@ impl Command {
             Self::Undo => "Undo edit",
             Self::Redo => "Redo edit",
             Self::Language => "Interface language",
+            Self::CheckUpdates => "Check for updates",
+            Self::UpdateResult => "Update check result",
         }
     }
 
@@ -49,6 +53,7 @@ impl Command {
             Self::OpenLinks | Self::Back | Self::ToggleFocus => "Navigation",
             Self::Undo | Self::Redo => "Editor",
             Self::Help | Self::Quit | Self::Language => "Session",
+            Self::CheckUpdates | Self::UpdateResult => "Updates",
         }
     }
 
@@ -66,7 +71,7 @@ impl Command {
             Self::Quit => "Ctrl+Q",
             Self::Undo => "Ctrl+Z",
             Self::Redo => "Ctrl+Y",
-            Self::Language => "",
+            Self::Language | Self::CheckUpdates | Self::UpdateResult => "",
         }
     }
 
@@ -87,6 +92,8 @@ impl Command {
             Self::Undo => "undo revert edit отменить правку изменение",
             Self::Redo => "redo repeat edit повторить вернуть правку изменение",
             Self::Language => "language english russian язык интерфейс английский русский",
+            Self::CheckUpdates => "check updates version проверить обновления версия",
+            Self::UpdateResult => "update result release результат проверки обновлений релиз",
         }
     }
     pub fn localized_label(self, language: Language) -> &'static str {
@@ -106,6 +113,8 @@ impl Command {
                 Self::Undo => "Отменить правку",
                 Self::Redo => "Повторить правку",
                 Self::Language => "Язык интерфейса",
+                Self::CheckUpdates => "Проверить обновления",
+                Self::UpdateResult => "Результат проверки обновлений",
             },
         )
     }
@@ -116,6 +125,7 @@ impl Command {
                 "Notes" => "Заметки",
                 "Navigation" => "Навигация",
                 "Editor" => "Редактор",
+                "Updates" => "Обновления",
                 _ => "Приложение",
             },
         )

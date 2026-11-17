@@ -13,8 +13,12 @@ Stable `vX.Y.Z` tags must match `Cargo.toml`; prerelease suffixes are rejected.
 The workflow reruns CI before packaging for Windows x64 and Linux x64. Windows builds use
 the static C runtime so users do not need a separate VC++ runtime installation.
 Archives contain the executable, documentation and license, not user notes or
-configuration. The exact allowlist is the executable, `README.md`, `LICENSE` and
-`CHANGELOG.md`. Packages are named `terminalnote-vX.Y.Z-windows-x86_64.zip` and
+configuration. Linux includes `note`, `README.md`, `LICENSE` and `CHANGELOG.md`.
+The Windows ZIP additionally includes `setup.cmd`, `setup.ps1`, `uninstall.cmd`,
+`uninstall.ps1`, `scripts/setup-common.ps1`, `scripts/uninstall-common.ps1` and
+this release guide. Installer/uninstaller tests run only against disposable
+directories with real PATH, registry and user settings integration disabled.
+Packages are named `terminalnote-vX.Y.Z-windows-x86_64.zip` and
 `terminalnote-vX.Y.Z-linux-x86_64.tar.gz`; combined SHA-256 checksums are written to
 `SHA256SUMS.txt`. Linux binaries require a compatible system C library.
 
@@ -26,7 +30,8 @@ and persistent English/Russian language selection.
 
 Only a maintainer should create and push a version tag after review. Updating
 documentation or workflows does not itself commit, push, tag or publish anything.
-Do not reuse or move a published tag. No new version is claimed by these instructions.
+Do not reuse or move a published tag. Public publication is a separate, explicit
+maintainer action after artifact review.
 
 Checksums detect mismatches; they are not code signatures and cannot protect
 against a compromised publisher. Keep independent backups of notes.

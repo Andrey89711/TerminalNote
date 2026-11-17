@@ -366,3 +366,20 @@ fn real_terminal_language_choice_is_persisted_and_loaded_on_restart() {
         "User text stays unchanged.\n"
     );
 }
+
+#[test]
+fn real_terminal_update_consent_can_be_cancelled_without_a_network_request() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("First.md"), "UPDATE_CONSENT_NOTE\n").unwrap();
+    let mut terminal = TerminalSession::spawn(root.path());
+    terminal.expect_since(0, "UPDATE_CONSENT_NOTE");
+    terminal.action(b"\x10", "Commands");
+    terminal.send(b"\x1b[200~check updates\x1b[201~");
+    terminal.action(b"\r", "Send a request to api.github.com?");
+    terminal.action(b"\x1b", "Enter open/edit"); // Wait for dismissal before sending another key.
+    terminal.quit();
+    assert_eq!(
+        fs::read_to_string(root.path().join("First.md")).unwrap(),
+        "UPDATE_CONSENT_NOTE\n"
+    );
+}

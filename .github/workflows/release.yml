@@ -71,6 +71,14 @@ jobs:
       - name: Verify Windows x64 imports (no VC++ runtime DLLs)
         if: runner.os == 'Windows'
         run: python scripts/release.py check-windows target/${{ matrix.target }}/release/note.exe
+      - name: Test isolated Windows setup with release binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-setup.ps1 -BinaryPath target/${{ matrix.target }}/release/note.exe
+      - name: Test isolated Windows uninstall with release binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-uninstall.ps1 -BinaryPath target/${{ matrix.target }}/release/note.exe
       - name: Create and verify allowlisted archive
         run: python scripts/release.py package --platform ${{ matrix.platform }} --binary target/${{ matrix.target }}/release/${{ matrix.binary }} --output dist
       - uses: actions/upload-artifact@v4
@@ -111,4 +119,4 @@ jobs:
             dist/terminalnote-*-windows-x86_64.zip \
             dist/terminalnote-*-linux-x86_64.tar.gz dist/SHA256SUMS.txt \
             --draft --verify-tag --title "TerminalNote $RELEASE_TAG" \
-            --notes "Windows x64 and Linux x64 command-line binaries. Archives contain only the executable, README.md, LICENSE, and CHANGELOG.md. Verify SHA256SUMS.txt before extracting. Checksums are not digital signatures; binaries are not code-signed. Linux requires a compatible system C library. This release is a draft pending manual review."
+            --notes "Windows x64 installer ZIP includes note.exe, setup.cmd/setup.ps1, uninstall.cmd/uninstall.ps1, shared installer scripts, README.md, LICENSE, CHANGELOG.md, and docs/RELEASING.md. Extract the entire ZIP before running setup.cmd. Setup and uninstall preserve existing notes and configuration. Linux x64 TAR.GZ contains only note, README.md, LICENSE, and CHANGELOG.md and requires a compatible system C library. Verify SHA256SUMS.txt before extracting. Checksums are not digital signatures; binaries are not code-signed. This release is a draft pending manual review."

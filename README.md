@@ -8,8 +8,9 @@ with the **`note`** command, not a plugin or part of OpenTerminal.
 Source: [Andrey89711/TerminalNote](https://github.com/Andrey89711/TerminalNote).
 
 Browse files, preview Markdown, edit notes and follow internal links. Notes stay
-ordinary `.md` and `.txt` files: no cloud, account, database or encryption. Prebuilt
-binary releases have not been published yet; build from source for now.
+ordinary `.md` and `.txt` files: no cloud, account, database or encryption.
+Windows installer packages and Linux binaries are available from
+[GitHub Releases](https://github.com/Andrey89711/TerminalNote/releases/latest).
 
 The TermVault-style interface uses dark panels, peach accents, purple headings and
 muted labels. An Explorer-style expandable tree sits beside the preview. **Ctrl+P**
@@ -57,6 +58,31 @@ println!("Hello, notes!");
 
 **Ctrl+S** saves an ordinary Markdown file; **Esc** returns to the list and preview.
 Specify `.txt` explicitly for a plain-text note.
+
+## Windows installer
+
+1. Download `terminalnote-v0.1.0-windows-x86_64.zip` and `SHA256SUMS.txt` from
+   [the release page](https://github.com/Andrey89711/TerminalNote/releases/tag/v0.1.0).
+2. Compare the ZIP's `Get-FileHash -Algorithm SHA256` result with the published checksum.
+3. Extract the whole archive, then double-click **`setup.cmd`**. Do not run it from
+   inside the ZIP. Rust and administrator permissions are not required.
+4. Choose an existing notes folder, or explicitly confirm creating a new folder.
+5. Open a new terminal and run **`note`**.
+
+The installer uses `%LOCALAPPDATA%\Programs\TerminalNote`, adds the command to the
+user PATH without replacing unrelated entries, and registers an Apps uninstall
+entry. Reinstallation/repair keeps notes and the existing language setting.
+Uninstall through Windows Settings → Apps → TerminalNote or `uninstall.cmd` in
+the installed folder. **Notes and configuration are retained.** Unknown files in
+the application directory are not recursively deleted.
+
+The package is not code-signed. Windows may show a reputation warning: verify the
+repository, release and checksum before choosing whether to run it. Checksums
+detect mismatches; they are not digital signatures. The Windows x64 executable
+links the C runtime statically, so no separate VC++ runtime package is required.
+
+The same ZIP can also be used without installation: run `note.exe PATH_TO_NOTES`.
+Linux users can extract the `.tar.gz` release and run `./note PATH_TO_NOTES`.
 
 ## Run from source
 
@@ -234,6 +260,20 @@ Malformed TOML, unknown fields, invalid language values, non-string or relative
 roots, non-UTF-8, files larger than 64 KiB and configuration symlinks are rejected.
 Damaged configuration is not silently overwritten: fix it manually. The notes
 folder's existence and accessibility are checked when opening it.
+
+## Manual update checks
+
+Use **Ctrl+P → Check for updates**. A separate consent dialog explains the request
+before it starts; Esc cancels. GitHub receives your IP address and a
+`TerminalNote/<version>` User-Agent. No note text, filenames, root paths or
+configuration are sent. The request uses HTTPS with redirects disabled, a 64 KiB
+response limit and a 10-second timeout.
+
+There are no startup/scheduled checks, automatic downloads, program execution or
+automatic installation. The background result never interrupts an editor draft;
+open **Update check result** through Ctrl+P to see the stable version and fixed
+GitHub release link. Update information is advisory HTTPS metadata, not signed
+update authorization. Download, verify and install a new version yourself.
 
 ## Development and CI/CD
 

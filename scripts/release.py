@@ -6,6 +6,7 @@ import hashlib
 import io
 from pathlib import Path
 import re
+import stat
 import struct
 import tarfile
 import tomllib
@@ -14,6 +15,9 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCUMENTS = ("README.md", "LICENSE", "CHANGELOG.md")
+WINDOWS_INSTALLER = ("setup.cmd", "setup.ps1", "uninstall.cmd", "uninstall.ps1",
+                     "scripts/setup-common.ps1", "scripts/uninstall-common.ps1",
+                     "docs/RELEASING.md")
 PLATFORMS = {"windows-x86_64": ("note.exe", ".zip"),
              "linux-x86_64": ("note", ".tar.gz")}
 
@@ -102,12 +106,20 @@ def archive_name(platform, root=ROOT):
     return f"terminalnote-v{version(root)}-{platform}{PLATFORMS[platform][1]}"
 
 
+def archive_members(platform):
+    return [PLATFORMS[platform][0], *DOCUMENTS,
+            *(WINDOWS_INSTALLER if platform == "windows-x86_64" else ())]
+
+
 def verify_archive(path, platform):
-    expected = [PLATFORMS[platform][0], *DOCUMENTS]
+    expected = archive_members(platform)
     if platform == "windows-x86_64":
         with zipfile.ZipFile(path) as archive:
             if archive.namelist() != expected or archive.testzip() is not None:
                 raise ValueError("ZIP must contain only the ordered release allowlist")
+            for member in archive.infolist():
+                if member.is_dir() or not stat.S_ISREG(member.external_attr >> 16):
+                    raise ValueError("ZIP contains a non-file")
     else:
         with tarfile.open(path, "r:gz") as archive:
             members = archive.getmembers()
@@ -127,7 +139,7 @@ def package(platform, binary, output, root=ROOT):
     if platform == "windows-x86_64":
         check_windows(binary)
     files = [(PLATFORMS[platform][0], binary.read_bytes())]
-    files += [(name, (root / name).read_bytes()) for name in DOCUMENTS]
+    files += [(name, (root / name).read_bytes()) for name in archive_members(platform)[1:]]
     output.mkdir(parents=True, exist_ok=True)
     path = output / archive_name(platform, root)
     # Fixed ordering, timestamps, owner metadata and permissions. This makes

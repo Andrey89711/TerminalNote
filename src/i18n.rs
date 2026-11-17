@@ -22,6 +22,26 @@ impl Language {
             return detail.into();
         }
         match detail {
+            "Cannot start update check" => "Не удалось запустить проверку обновлений".into(),
+            "Cannot prepare HTTPS update check" => "Не удалось подготовить HTTPS-проверку".into(),
+            "Cannot reach GitHub. Check your network and retry." => {
+                "Не удалось связаться с GitHub. Проверьте сеть и повторите попытку.".into()
+            }
+            "GitHub rejected the check. Try again later." => {
+                "GitHub отклонил проверку. Повторите позже.".into()
+            }
+            "Cannot read GitHub response" => "Не удалось прочитать ответ GitHub".into(),
+            "GitHub response exceeds the size limit" => {
+                "Ответ GitHub превышает допустимый размер".into()
+            }
+            "Invalid GitHub response" => "Некорректный ответ GitHub".into(),
+            "Expected a published stable release" => {
+                "Ожидался опубликованный стабильный релиз".into()
+            }
+            "Invalid release tag" => "Некорректный тег релиза".into(),
+            "Invalid release version" => "Некорректная версия релиза".into(),
+            "Expected a stable vX.Y.Z tag" => "Ожидался стабильный тег vX.Y.Z".into(),
+            "Invalid application version" => "Некорректная версия приложения".into(),
             "Cannot save: note changed on disk; reload it before saving" => {
                 "Заметка изменена на диске; перечитайте её перед сохранением".into()
             }

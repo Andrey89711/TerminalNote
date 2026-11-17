@@ -3,6 +3,7 @@
 import contextlib
 import io
 from pathlib import Path
+import stat
 import struct
 import tarfile
 import tempfile
@@ -42,7 +43,8 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / "Cargo.toml").write_text('[package]\nversion = "0.1.0"\n', encoding="utf-8")
-        for name in release.DOCUMENTS:
+        for name in (*release.DOCUMENTS, *release.WINDOWS_INSTALLER):
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
             (self.root / name).write_text(name + "\n", encoding="utf-8")
         self.binary = self.root / "fixture"
         self.binary.write_bytes(pe_fixture())
@@ -84,9 +86,18 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(first.read_bytes(), second.read_bytes())
             expected = [release.PLATFORMS[platform][0], *release.DOCUMENTS]
             if platform == "windows-x86_64":
+                expected += ["setup.cmd", "setup.ps1", "uninstall.cmd", "uninstall.ps1",
+                             "scripts/setup-common.ps1", "scripts/uninstall-common.ps1",
+                             "docs/RELEASING.md"]
                 with zipfile.ZipFile(first) as archive:
                     self.assertEqual(archive.namelist(), expected)
                     self.assertEqual(archive.read("note.exe"), self.binary.read_bytes())
+                    for member in archive.infolist():
+                        self.assertEqual(member.date_time, (1980, 1, 1, 0, 0, 0))
+                        self.assertEqual(member.external_attr >> 16, stat.S_IFREG | 0o644)
+                        if member.filename != "note.exe":
+                            self.assertEqual(archive.read(member),
+                                             (self.root / member.filename).read_bytes())
             else:
                 with tarfile.open(first) as archive:
                     self.assertEqual(archive.getnames(), expected)
@@ -113,6 +124,40 @@ class ReleaseTests(unittest.TestCase):
             output.writestr("private-note.txt", "must not ship")
         with self.assertRaises(ValueError):
             release.verify_archive(archive, "windows-x86_64")
+
+    def test_windows_archive_requires_complete_ordered_installer(self):
+        original = self.package("windows-x86_64", self.root / "dist")
+        with zipfile.ZipFile(original) as archive:
+            files = [(member, archive.read(member)) for member in archive.infolist()]
+        for label, members in (("missing", files[:-1]), ("reordered", list(reversed(files))),
+                               ("duplicate", files + [files[-1]])):
+            with self.subTest(label=label):
+                path = self.root / (label + ".zip")
+                with zipfile.ZipFile(path, "w") as archive:
+                    for member, content in members:
+                        archive.writestr(member, content)
+                with self.assertRaises(ValueError):
+                    release.verify_archive(path, "windows-x86_64")
+
+    def test_windows_archive_rejects_nonregular_members(self):
+        for kind in (stat.S_IFLNK, stat.S_IFDIR):
+            with self.subTest(kind=kind):
+                path = self.root / "nonregular.zip"
+                with zipfile.ZipFile(path, "w") as archive:
+                    for name in release.archive_members("windows-x86_64"):
+                        member = zipfile.ZipInfo(name)
+                        member.create_system = 3
+                        member.external_attr = ((kind if name == "setup.cmd" else stat.S_IFREG)
+                                                | 0o644) << 16
+                        archive.writestr(member, "synthetic fixture")
+                with self.assertRaises(ValueError):
+                    release.verify_archive(path, "windows-x86_64")
+
+    def test_windows_package_requires_installer_files_but_linux_does_not(self):
+        (self.root / "setup.cmd").unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.package("windows-x86_64", self.root / "dist")
+        self.package("linux-x86_64", self.root / "dist")
 
 
 if __name__ == "__main__":

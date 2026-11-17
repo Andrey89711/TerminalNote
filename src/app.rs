@@ -6,6 +6,7 @@ use crate::{
     links::{extract_links, resolve_link, NoteLink},
     markdown::{plain_text, render_markdown},
     storage::{Document, NoteEntry, NoteStore, MAX_NOTE_BYTES},
+    updates::{self, UpdateStatus},
 };
 use anyhow::{Context, Result};
 use crossterm::{
@@ -29,6 +30,7 @@ use std::{
     collections::HashSet,
     io,
     path::{Path, PathBuf},
+    sync::mpsc::{Receiver, TryRecvError},
     time::{Duration, Instant},
 };
 use tui_textarea::TextArea;
@@ -47,6 +49,8 @@ enum Mode {
     Confirm { quit: bool },
     Help,
     Language,
+    UpdateConsent,
+    UpdateResult,
 }
 
 struct App {
@@ -83,6 +87,10 @@ struct App {
     language_selected: usize,
     language_visible: bool,
     language_hits: Vec<(Rect, usize)>,
+    update_rx: Option<Receiver<updates::CheckResult>>,
+    update_result: Option<UpdateStatus>,
+    update_return: Option<Mode>,
+    update_consent_visible: bool,
 }
 
 impl App {
@@ -121,6 +129,10 @@ impl App {
             language_selected: 0,
             language_visible: false,
             language_hits: Vec::new(),
+            update_rx: None,
+            update_result: None,
+            update_return: None,
+            update_consent_visible: false,
         };
         app.refresh(None)?;
         Ok(app)
@@ -431,6 +443,7 @@ impl App {
 
     fn leave_editor(&mut self, quit: bool) {
         self.palette = None;
+        self.update_return = None;
         if self.dirty() {
             self.mode = Mode::Confirm { quit };
         } else {
@@ -545,7 +558,7 @@ impl App {
     }
 
     fn available_commands(&self) -> Vec<Command> {
-        match self.mode {
+        let mut commands = match self.mode {
             Mode::Browse => {
                 let mut commands = vec![Command::NewNote, Command::SearchNotes, Command::Refresh];
                 if self.document.is_some() {
@@ -572,7 +585,14 @@ impl App {
                 Command::Quit,
             ],
             _ => Vec::new(),
+        };
+        if matches!(self.mode, Mode::Browse | Mode::Edit) {
+            commands.push(Command::CheckUpdates);
+            if self.update_result.is_some() {
+                commands.push(Command::UpdateResult);
+            }
         }
+        commands
     }
     fn open_palette(&mut self) {
         if self.available_commands().is_empty() {
@@ -628,6 +648,25 @@ impl App {
                 }
             }
             Command::ToggleFocus => self.preview_focus = !self.preview_focus,
+            Command::CheckUpdates => {
+                if self.update_rx.is_some() {
+                    self.message(
+                        self.tr(
+                            "Update check already running",
+                            "Проверка обновлений уже идёт",
+                        ),
+                        false,
+                    );
+                } else {
+                    self.update_return = Some(self.mode);
+                    self.update_consent_visible = false;
+                    self.mode = Mode::UpdateConsent;
+                }
+            }
+            Command::UpdateResult => {
+                self.update_return = Some(self.mode);
+                self.mode = Mode::UpdateResult;
+            }
             Command::Help => {
                 self.help_return = Some(self.mode);
                 self.mode = Mode::Help;
@@ -676,14 +715,95 @@ impl App {
             _ => self.palette.as_mut().unwrap().key(key, commands.len()),
         }
     }
+    fn close_update_dialog(&mut self) {
+        self.mode = self.update_return.take().unwrap_or(Mode::Browse);
+    }
+    fn start_update_check(&mut self) {
+        if !self.update_consent_visible {
+            return;
+        }
+        self.close_update_dialog();
+        if self.update_rx.is_some() {
+            return;
+        }
+        self.update_result = None;
+        match updates::start_check() {
+            Ok(receiver) => {
+                self.update_rx = Some(receiver);
+                self.message(
+                    self.tr(
+                        "Checking GitHub for updates…",
+                        "Проверяем обновления на GitHub…",
+                    ),
+                    false,
+                );
+            }
+            Err(error) => self.message(
+                format!(
+                    "{}: {}",
+                    self.tr(
+                        "Cannot check for updates",
+                        "Не удалось проверить обновления"
+                    ),
+                    self.language.error(&error.to_string())
+                ),
+                true,
+            ),
+        }
+    }
+    fn poll_update(&mut self) -> bool {
+        let Some(receiver) = &self.update_rx else {
+            return false;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => Err(self
+                .tr(
+                    "Update check was interrupted. Please retry.",
+                    "Проверка обновлений прервана. Повторите попытку.",
+                )
+                .into()),
+        };
+        self.update_rx = None;
+        match result {
+            Ok(status) => {
+                self.message(
+                    match &status {
+                        UpdateStatus::Available(version) => format!(
+                            "{} {version}. {}",
+                            self.tr("Available:", "Доступна версия:"),
+                            self.tr(
+                                "Open the update result in Ctrl+P.",
+                                "Результат проверки — в Ctrl+P."
+                            )
+                        ),
+                        _ => status.description(self.language),
+                    },
+                    false,
+                );
+                self.update_result = Some(status);
+            }
+            Err(error) => self.message(
+                format!(
+                    "{}: {}",
+                    self.tr("Update check failed", "Ошибка проверки обновлений"),
+                    self.language.error(&error)
+                ),
+                true,
+            ),
+        }
+        true
+    }
     fn tick(&mut self, now: Instant) -> bool {
+        let changed = self.poll_update();
         if self.notice_until.is_some_and(|until| now >= until) {
             self.notice_until = None;
             self.status.clear();
             self.error = false;
             return true;
         }
-        false
+        changed
     }
 
     fn key(&mut self, key: KeyEvent) {
@@ -716,6 +836,16 @@ impl App {
             return;
         }
         match self.mode {
+            Mode::UpdateConsent => match key.code {
+                KeyCode::Esc => self.close_update_dialog(),
+                KeyCode::Enter => self.start_update_check(),
+                _ => {}
+            },
+            Mode::UpdateResult => {
+                if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+                    self.close_update_dialog();
+                }
+            }
             Mode::Language => match key.code {
                 KeyCode::Esc => self.mode = self.language_return.take().unwrap_or(Mode::Browse),
                 KeyCode::Up | KeyCode::BackTab => self.language_selected = 0,
@@ -1249,6 +1379,7 @@ impl App {
         self.palette_visible = true;
     }
     fn draw(&mut self, frame: &mut Frame) {
+        self.update_consent_visible = false;
         self.language_visible = false;
         self.language_hits.clear();
         self.palette_visible = false;
@@ -1394,7 +1525,12 @@ impl App {
             frame.render_widget(&preview, panels[1]);
             self.preview = preview;
         }
-        let help = if self.editor.is_some() {
+        let help = if matches!(self.mode, Mode::UpdateConsent | Mode::UpdateResult) {
+            self.tr(
+                " Enter continue · Esc back ",
+                " Enter продолжить · Esc назад ",
+            )
+        } else if self.editor.is_some() {
             self.tr(" Ctrl+P commands · Ctrl+S save · Esc back · Ctrl+Z undo · Ctrl+Y redo · Ctrl+Q quit ", " Ctrl+P команды · Ctrl+S сохранить · Esc назад · Ctrl+Z отменить · Ctrl+Y повторить · Ctrl+Q выход ")
         } else {
             self.tr(" Ctrl+P commands · ↑↓ select · ←→ folders · Enter open/edit · n new · / search · Tab preview ", " Ctrl+P команды · ↑↓ выбор · ←→ папки · Enter открыть · n новая · / поиск · Tab просмотр ")
@@ -1402,6 +1538,20 @@ impl App {
         frame.render_widget(Paragraph::new(help).style(theme::dim()), parts[2]);
         self.draw_notice(frame);
         match self.mode {
+            Mode::UpdateConsent => {
+                let text = self.tr("Send a request to api.github.com?\n\nGitHub receives your IP address and TerminalNote/version User-Agent.\nNotes, filenames, folder paths and settings are NOT sent.\n\nOnly this command starts the check. Timeout: 10 seconds.\nNo automatic downloads, execution or installation.\n\n[Enter] Check   [Esc] Cancel", "Отправить запрос к api.github.com?\n\nGitHub получит ваш IP и User-Agent TerminalNote/версия.\nЗаметки, имена файлов, пути папок и настройки НЕ передаются.\n\nПроверка запускается только этой командой. Тайм-аут: 10 секунд.\nНет автоматического скачивания, запуска или установки.\n\n[Enter] Проверить   [Esc] Отмена");
+                let height = Paragraph::new(text).wrap(Wrap { trim: false }).line_count(area.width.min(82).saturating_sub(2)) + 2;
+                if height > usize::from(area.height.saturating_sub(2)) {
+                    popup(frame, self.tr("Resize the window to see the full consent text.\n\nEsc cancels; Enter is disabled.", "Увеличьте окно, чтобы увидеть полный текст согласия.\n\nEsc — отмена; Enter заблокирован."), self.tr(" Check blocked ", " Проверка заблокирована "), 8);
+                } else {
+                    popup(frame, text, self.tr(" Check for updates ", " Проверить обновления "), height as u16);
+                    self.update_consent_visible = true;
+                }
+            }
+            Mode::UpdateResult => {
+                let text = self.update_result.as_ref().map(|status| status.description(self.language)).unwrap_or_else(|| self.tr("No update result yet.", "Результат проверки отсутствует.").into());
+                popup(frame, &format!("{text}\n\n{}", self.tr("Enter / Esc — back", "Enter / Esc — назад")), self.tr(" Updates ", " Обновления "), 18);
+            }
             Mode::Language => {
                 dim_backdrop(frame);
                 let rect = centered(area, 54, 8);
@@ -1683,6 +1833,74 @@ mod tests {
             std::fs::read_to_string(root.path().join("First.md")).unwrap(),
             draft
         );
+    }
+    #[test]
+    fn update_checks_require_full_visible_consent_and_cancel_without_touching_a_draft() {
+        let (_root, mut app) = app();
+        assert!(app.update_rx.is_none());
+        app.start_edit();
+        app.paste("Unsaved draft ".into());
+        let draft = app.edited_text();
+        palette_command(&mut app, "check updates");
+        assert_eq!(app.mode, Mode::UpdateConsent);
+        app.key(key(KeyCode::Enter)); // No consent has been rendered.
+        assert!(app.update_rx.is_none());
+        let _ = rendered(&mut app, 60, 12);
+        assert!(!app.update_consent_visible);
+        app.key(key(KeyCode::Enter));
+        assert!(app.update_rx.is_none());
+        let text = screen(&rendered(&mut app, 110, 32));
+        assert!(text.contains("api.github.com"));
+        assert!(app.update_consent_visible);
+        app.key(key(KeyCode::Esc)); // Never accept consent in a test: no HTTP requests.
+        assert_eq!(app.mode, Mode::Edit);
+        assert_eq!(app.edited_text(), draft);
+        assert!(app.update_rx.is_none());
+    }
+    #[test]
+    fn update_results_arrive_without_interrupting_edits_and_are_localized() {
+        let (_root, mut app) = app();
+        app.start_edit();
+        app.paste("Preserved edit ".into());
+        let draft = app.edited_text();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.update_rx = Some(receiver);
+        sender
+            .send(Ok(UpdateStatus::Available("99.0.0".into())))
+            .unwrap();
+        assert!(app.tick(Instant::now()));
+        assert_eq!(app.mode, Mode::Edit);
+        assert_eq!(app.edited_text(), draft);
+        palette_command(&mut app, "update result");
+        assert_eq!(app.mode, Mode::UpdateResult);
+        assert!(screen(&rendered(&mut app, 110, 32)).contains("99.0.0"));
+        app.key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Edit);
+        assert_eq!(app.edited_text(), draft);
+        app.language = Language::Russian;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.update_rx = Some(receiver);
+        sender
+            .send(Err("Cannot read GitHub response".into()))
+            .unwrap();
+        assert!(app.tick(Instant::now()));
+        assert!(app.status.contains("Не удалось прочитать ответ GitHub"));
+        assert_eq!(app.edited_text(), draft);
+    }
+    #[test]
+    fn duplicate_update_commands_never_spawn_a_second_worker() {
+        let (_root, mut app) = app();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        app.update_rx = Some(receiver);
+        app.execute_command(Command::CheckUpdates);
+        assert_eq!(app.mode, Mode::Browse);
+        assert!(app.update_return.is_none());
+        assert!(app.status.contains("already running"));
+        app.start_edit();
+        app.paste("draft".into());
+        app.leave_editor(false);
+        app.execute_command(Command::CheckUpdates);
+        assert_eq!(app.mode, Mode::Confirm { quit: false });
     }
     #[test]
     fn english_is_default_and_language_switch_persists_without_changing_the_draft_or_note_text() {

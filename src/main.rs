@@ -7,6 +7,7 @@ mod links;
 mod markdown;
 mod storage;
 mod theme;
+mod updates;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
