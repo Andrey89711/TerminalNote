@@ -188,3 +188,6 @@ try {
     # Only this newly-created, GUID-named test fixture under approved Temp/opencode.
     if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 }
+# Expected native failures must not leak into GitHub Actions' pwsh exit wrapper.
+# Unhandled exceptions still terminate before reaching this successful exit.
+exit 0
