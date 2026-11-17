@@ -1,15 +1,15 @@
-# Добро пожаловать в TerminalNote
+# Welcome to TerminalNote
 
-Это обычный Markdown-файл: заметки остаются вашими локальными файлами.
+This is an ordinary Markdown file: your notes remain local files under your control.
 
-- Откройте [[Ideas]], чтобы записать новую идею.
-- Посмотрите [список задач](Archive/Checklist.txt).
-- Нажмите Enter в списке заметок, чтобы открыть редактор.
+- Open [[Ideas]] to write down a new idea.
+- Review [the checklist](Archive/Checklist.txt).
+- Press Enter on a note in the tree to open the editor.
 
-## Небольшой пример
+## Quick example
 
 ```text
 note examples/notes
 ```
 
-Для перехода по внутренним ссылкам нажмите `l`, выберите ссылку и нажмите Enter.
+To follow an internal link, press `l`, select a link and press Enter.

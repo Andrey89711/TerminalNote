@@ -1,5 +1,6 @@
 //! Small, strict configuration stored separately from the notes directory.
 
+use crate::i18n::Language;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -8,15 +9,24 @@ use std::path::{Path, PathBuf};
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     root: Option<String>,
+    #[serde(default)]
+    language: Language,
 }
 
 /// Return the platform configuration file location (including XDG on Unix).
 pub fn config_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("TERMINALNOTE_CONFIG") {
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            bail!("TERMINALNOTE_CONFIG must be an absolute file path");
+        }
+        return Ok(path);
+    }
     Ok(dirs::config_dir()
         .context("Cannot determine the user configuration directory")?
         .join("terminalnote")
@@ -25,7 +35,11 @@ pub fn config_path() -> Result<PathBuf> {
 
 /// Read the configured absolute root, or use ~/Notes without creating it.
 pub fn default_root() -> Result<PathBuf> {
-    let config = read_config(&config_path()?)?;
+    default_root_at(&config_path()?)
+}
+
+pub fn default_root_at(path: &Path) -> Result<PathBuf> {
+    let config = read_config(path)?;
     match config.root {
         Some(root) => Ok(PathBuf::from(root)),
         None => Ok(dirs::home_dir()
@@ -40,6 +54,17 @@ pub fn set_default_root(root: &Path) -> Result<PathBuf> {
     let path = config_path()?;
     set_default_root_at(root, &path)?;
     Ok(path)
+}
+
+pub fn language_at(path: &Path) -> Result<Language> {
+    Ok(read_config(path)?.language)
+}
+
+pub fn set_language_at(path: &Path, language: Language) -> Result<()> {
+    let original = read_config(path)?;
+    let mut config = original.clone();
+    config.language = language;
+    write_config_at(path, &config, &original)
 }
 
 fn read_config(path: &Path) -> Result<Config> {
@@ -82,7 +107,7 @@ fn read_config(path: &Path) -> Result<Config> {
     Ok(config)
 }
 
-fn set_default_root_at(root: &Path, path: &Path) -> Result<()> {
+pub fn set_default_root_at(root: &Path, path: &Path) -> Result<()> {
     if !root.is_absolute() {
         bail!("Default notes root must be an absolute path");
     }
@@ -98,8 +123,13 @@ fn set_default_root_at(root: &Path, path: &Path) -> Result<()> {
         .to_owned();
     // Validate any existing file before making changes. Unknown fields are errors,
     // rather than silently discarded settings from another configuration version.
-    let mut config = read_config(path)?;
+    let original = read_config(path)?;
+    let mut config = original.clone();
     config.root = Some(root);
+    write_config_at(path, &config, &original)
+}
+
+fn write_config_at(path: &Path, config: &Config, original: &Config) -> Result<()> {
     let text = toml::to_string_pretty(&config).context("Cannot serialize configuration")?;
     let parent = path
         .parent()
@@ -116,7 +146,9 @@ fn set_default_root_at(root: &Path, path: &Path) -> Result<()> {
         .sync_all()
         .context("Cannot flush temporary config")?;
     // Check again immediately before replacement; never deliberately replace a link.
-    read_config(path)?;
+    if &read_config(path)? != original {
+        bail!("Configuration changed on disk; retry the operation");
+    }
     temporary
         .persist(path)
         .with_context(|| format!("Cannot atomically save config {}", path.display()))?;
@@ -132,8 +164,40 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("config.toml");
         assert!(read_config(&path)?.root.is_none());
+        assert_eq!(read_config(&path)?.language, Language::English);
         fs::write(&path, "# No default configured\n")?;
         assert!(read_config(&path)?.root.is_none());
+        Ok(())
+    }
+    #[test]
+    fn language_roundtrip_preserves_root_and_root_changes_preserve_language() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("config.toml");
+        fs::write(&path, format!("root = '{}'\n", temp.path().display()))?;
+        assert_eq!(language_at(&path)?, Language::English);
+        let root = read_config(&path)?.root;
+        set_language_at(&path, Language::Russian)?;
+        assert_eq!(language_at(&path)?, Language::Russian);
+        assert_eq!(read_config(&path)?.root, root);
+        set_default_root_at(temp.path(), &path)?;
+        assert_eq!(language_at(&path)?, Language::Russian);
+        set_language_at(&path, Language::English)?;
+        assert_eq!(language_at(&path)?, Language::English);
+        for text in ["language = 'de'", "language = 123", "unknown = true"] {
+            fs::write(&path, text)?;
+            assert!(set_language_at(&path, Language::Russian).is_err());
+            assert_eq!(fs::read_to_string(&path)?, text);
+        }
+        Ok(())
+    }
+    #[test]
+    fn stale_config_write_is_rejected() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("config.toml");
+        let original = read_config(&path)?;
+        fs::write(&path, "language = 'ru'\n")?;
+        assert!(write_config_at(&path, &original, &original).is_err());
+        assert_eq!(language_at(&path)?, Language::Russian);
         Ok(())
     }
 

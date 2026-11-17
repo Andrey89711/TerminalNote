@@ -1,7 +1,8 @@
 //! Safe, deliberately lightweight terminal Markdown rendering.
+use crate::theme::{self, BORDER, FG, MUTED, PRIMARY, SECONDARY, SURFACE};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
 };
 
@@ -129,10 +130,10 @@ impl Output {
             let (target, label) = body.split_once('|').unwrap_or((body, body));
             self.push(
                 &format!("[{label}]"),
-                style.fg(Color::Magenta).add_modifier(Modifier::UNDERLINED),
+                style.fg(MUTED).add_modifier(Modifier::UNDERLINED),
             );
             if target != label {
-                self.push(&format!(" ({target})"), style.fg(Color::DarkGray));
+                self.push(&format!(" ({target})"), style.fg(MUTED));
             }
             rest = &rest[end + 2..];
         }
@@ -146,7 +147,7 @@ pub fn render_markdown(text: &str) -> Text<'static> {
     // Sanitize before parsing, so even code, link destinations and HTML are safe.
     let safe = sanitize(text);
     let mut out = Output::default();
-    let mut styles = vec![Style::default()];
+    let mut styles = vec![theme::base()];
     let mut lists: Vec<Option<u64>> = Vec::new();
     let mut links = Vec::new();
     let mut code_depth = 0usize;
@@ -176,28 +177,29 @@ pub fn render_markdown(text: &str) -> Text<'static> {
                         out.boundary();
                         out.push(
                             &format!("{} ", "#".repeat(level as usize)),
-                            style.fg(Color::Cyan),
+                            style.fg(SECONDARY),
                         );
-                        next = next.fg(Color::Cyan).add_modifier(Modifier::BOLD);
+                        next = next.fg(SECONDARY).add_modifier(Modifier::BOLD);
                     }
                     Tag::Paragraph => {}
-                    Tag::Strong => next = next.add_modifier(Modifier::BOLD),
-                    Tag::Emphasis => next = next.add_modifier(Modifier::ITALIC),
+                    Tag::Strong => next = next.fg(PRIMARY).add_modifier(Modifier::BOLD),
+                    Tag::Emphasis => next = next.fg(PRIMARY).add_modifier(Modifier::ITALIC),
                     Tag::Strikethrough => next = next.add_modifier(Modifier::CROSSED_OUT),
                     Tag::CodeBlock(kind) => {
                         out.boundary();
                         if let CodeBlockKind::Fenced(language) = kind {
                             if !language.is_empty() {
-                                out.push(&format!("```{language}"), style.fg(Color::DarkGray));
+                                out.push(&format!("```{language}"), style.fg(MUTED).bg(SURFACE));
                                 out.newline();
                             }
                         }
                         code_depth += 1;
-                        next = next.fg(Color::Yellow);
+                        next = next.fg(FG).bg(SURFACE);
                     }
                     Tag::BlockQuote(_) => {
                         out.boundary();
-                        out.push("│ ", style.fg(Color::DarkGray));
+                        out.push("│ ", style.fg(MUTED));
+                        next = next.fg(MUTED);
                     }
                     Tag::List(start) => {
                         out.boundary();
@@ -218,13 +220,13 @@ pub fn render_markdown(text: &str) -> Text<'static> {
                     }
                     Tag::Link { dest_url, .. } => {
                         links.push(dest_url.into_string());
-                        next = next.fg(Color::Blue).add_modifier(Modifier::UNDERLINED);
+                        next = next.fg(MUTED).add_modifier(Modifier::UNDERLINED);
                     }
                     Tag::Image { .. } => {
-                        out.push("[image: ", style.fg(Color::DarkGray));
+                        out.push("[image: ", style.fg(MUTED));
                     }
                     Tag::Table(_) | Tag::TableHead | Tag::TableRow => out.boundary(),
-                    Tag::TableCell => out.push("| ", style.fg(Color::DarkGray)),
+                    Tag::TableCell => out.push("| ", style.fg(BORDER)),
                     _ => {}
                 }
                 styles.push(next);
@@ -251,26 +253,21 @@ pub fn render_markdown(text: &str) -> Text<'static> {
                     }
                     TagEnd::Link => {
                         if let Some(target) = links.pop() {
-                            out.push(
-                                &format!(" ({target})"),
-                                Style::default().fg(Color::DarkGray),
-                            );
+                            out.push(&format!(" ({target})"), style.fg(MUTED));
                         }
                     }
-                    TagEnd::Image => out.push("]", style.fg(Color::DarkGray)),
+                    TagEnd::Image => out.push("]", style.fg(MUTED)),
                     TagEnd::TableCell => out.push(" ", style),
                     _ => {}
                 }
             }
-            Event::Code(code) => out.push(&code, style.fg(Color::Yellow)),
-            Event::Html(html) | Event::InlineHtml(html) => {
-                out.push(&html, style.fg(Color::DarkGray))
-            }
+            Event::Code(code) => out.push(&code, style.fg(FG).bg(SURFACE)),
+            Event::Html(html) | Event::InlineHtml(html) => out.push(&html, style.fg(MUTED)),
             Event::SoftBreak => out.push(" ", style),
             Event::HardBreak => out.newline(),
             Event::Rule => {
                 out.boundary();
-                out.push("────────", style.fg(Color::DarkGray));
+                out.push("────────", style.fg(BORDER));
                 out.newline();
             }
             Event::TaskListMarker(done) => out.push(if done { "[x] " } else { "[ ] " }, style),
@@ -341,5 +338,30 @@ mod tests {
         let text = string(render_markdown("- first\n- second\n\n> quote"));
         assert!(text.contains("• first\n• second"));
         assert!(text.contains("│ quote"));
+    }
+
+    #[test]
+    fn syntax_uses_shared_palette_and_restores_body_style() {
+        let rendered = render_markdown(
+            "# Heading\n\n**strong** *emphasis* `inline` body\n\n> quote\n\n[label](note.md) [[Target|wiki]]\n\n```rust\ncode\n```",
+        );
+        let style_of = |content: &str| {
+            rendered
+                .lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .find(|span| span.content.contains(content))
+                .unwrap()
+                .style
+        };
+        assert_eq!(style_of("Heading").fg, Some(SECONDARY));
+        assert_eq!(style_of("strong").fg, Some(PRIMARY));
+        assert_eq!(style_of("emphasis").fg, Some(PRIMARY));
+        assert_eq!(style_of("inline").bg, Some(SURFACE));
+        assert_eq!(style_of("code").bg, Some(SURFACE));
+        assert_eq!(style_of("body"), theme::base());
+        assert_eq!(style_of("quote").fg, Some(MUTED));
+        assert_eq!(style_of("label").fg, Some(MUTED));
+        assert_eq!(style_of("[wiki]").fg, Some(MUTED));
     }
 }

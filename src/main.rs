@@ -1,8 +1,12 @@
 mod app;
+mod commands;
 mod config;
+mod explorer;
+mod i18n;
 mod links;
 mod markdown;
 mod storage;
+mod theme;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -30,6 +34,9 @@ struct Cli {
     /// Check UTF-8 notes and internal links without starting the interface
     #[arg(long)]
     check: bool,
+    /// Explicit configuration file, used for isolated test and demo sessions
+    #[arg(long, hide = true, value_name = "PATH")]
+    config_file: Option<PathBuf>,
 }
 
 fn expand_path(path: PathBuf) -> Result<PathBuf> {
@@ -49,9 +56,21 @@ fn expand_path(path: PathBuf) -> Result<PathBuf> {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    if cli
+        .config_file
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        bail!("--config-file must be an absolute file path");
+    }
     if let Some(path) = cli.set_default {
         let path = expand_path(path)?;
-        let config = config::set_default_root(&path)?;
+        let config = if let Some(config) = &cli.config_file {
+            config::set_default_root_at(&path, config)?;
+            config.clone()
+        } else {
+            config::set_default_root(&path)?
+        };
         println!(
             "Default directory saved in {}",
             safe(&config.display().to_string())
@@ -66,7 +85,10 @@ fn run() -> Result<()> {
     }
     let root = expand_path(match cli.path {
         Some(path) => path,
-        None => config::default_root()?,
+        None => match &cli.config_file {
+            Some(path) => config::default_root_at(path)?,
+            None => config::default_root()?,
+        },
     })?;
     if cli.init {
         std::fs::create_dir_all(&root)
@@ -120,7 +142,7 @@ fn run() -> Result<()> {
         }
         return Ok(());
     }
-    app::run(store)
+    app::run(store, cli.config_file)
 }
 
 fn safe(text: &str) -> String {

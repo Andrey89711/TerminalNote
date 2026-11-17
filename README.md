@@ -1,12 +1,66 @@
 # TerminalNote
 
-Локальные Markdown- и текстовые заметки в терминале. Отдельное приложение на Rust с командой `note`, не плагин и не часть OpenTerminal. Исходники: [Andrey89711/TerminalNote](https://github.com/Andrey89711/TerminalNote).
+[![CI](https://github.com/Andrey89711/TerminalNote/actions/workflows/ci.yml/badge.svg)](https://github.com/Andrey89711/TerminalNote/actions/workflows/ci.yml)
+[CI/CD and draft releases](docs/RELEASING.md)
 
-MVP: список файлов, предпросмотр, редактор и переходы по внутренним ссылкам. Заметки остаются обычными `.md` и `.txt` файлами: без облака, учётной записи и собственной базы данных. Готовые бинарные релизы пока не опубликованы; установка — из исходников.
+Local Markdown and plain-text notes in your terminal. A standalone Rust application
+with the **`note`** command, not a plugin or part of OpenTerminal.
+Source: [Andrey89711/TerminalNote](https://github.com/Andrey89711/TerminalNote).
 
-## Запуск из исходников
+Browse files, preview Markdown, edit notes and follow internal links. Notes stay
+ordinary `.md` and `.txt` files: no cloud, account, database or encryption. Prebuilt
+binary releases have not been published yet; build from source for now.
 
-Нужны Git и актуальный стабильный [Rust](https://rustup.rs/).
+The TermVault-style interface uses dark panels, peach accents, purple headings and
+muted labels. An Explorer-style expandable tree sits beside the preview. **Ctrl+P**
+opens a centered command palette with a dimmed backdrop; compact gray notification
+cards appear at the top right.
+
+![Expandable note tree and Markdown preview](docs/images/notes.png)
+
+## Screenshots
+
+### Editor
+
+Full-screen source editing with line numbers and an unsaved-change indicator.
+**Ctrl+S** saves; **Esc** returns to browsing.
+
+![Markdown source editor](docs/images/editor.png)
+
+### Command palette
+
+Search available commands, select with the arrows and press **Enter**. The palette
+is not a shell and does not insert its search text into a note.
+
+![Centered command palette](docs/images/commands.png)
+
+Documentation screenshots use the actual Ratatui renderer with disposable demo
+notes, not personal notes or configuration. Paths are sanitized for publication.
+
+## Create a Markdown note
+
+Press **n**, enter `Ideas.md` or just `Ideas`, then press **Enter**. The `.md`
+extension is added automatically. For example:
+
+````markdown
+# Ideas
+
+- First task
+- Read [[Welcome]]
+
+**An important thought** and [another note](Ideas.md).
+
+```rust
+println!("Hello, notes!");
+```
+````
+
+**Ctrl+S** saves an ordinary Markdown file; **Esc** returns to the list and preview.
+Specify `.txt` explicitly for a plain-text note.
+
+## Run from source
+
+Requires Git and current stable [Rust](https://rustup.rs/).
 
 ```sh
 git clone https://github.com/Andrey89711/TerminalNote.git
@@ -16,24 +70,23 @@ cargo run -- --list examples/notes
 cargo run -- --check examples/notes
 ```
 
-Для TUI нужен интерактивный терминал. `--list` и `--check` работают без TUI, в том числе в скриптах.
+The TUI needs an interactive terminal. `--list` and `--check` also work in scripts.
 
-Установка команды:
+Install the command:
 
 ```sh
 cargo install --path . --locked
 ```
 
-Устанавливается один исполняемый файл `note` (`note.exe` на Windows) в каталог Cargo bin; он должен быть в `PATH`.
-
-Локальная release-сборка без установки команды:
+This installs `note` (`note.exe` on Windows) into Cargo's bin directory, which must
+be in `PATH`. To build locally without installing:
 
 ```powershell
 cargo build --release --locked
 .\target\release\note.exe .\examples\notes
 ```
 
-После установки можно выбрать собственный существующий каталог:
+After installation, select your own existing folder:
 
 ```powershell
 note --set-default 'C:\Users\User\Notes'
@@ -41,110 +94,148 @@ note
 note 'C:\Projects\my-project\notes'
 ```
 
-## Команды
+## Commands
 
 ```sh
-note                         # открыть настроенный каталог, по умолчанию ~/Notes
-note .                       # открыть текущий каталог
-note examples/notes          # открыть указанный каталог
-note --init                  # явно создать каталог по умолчанию и открыть TUI
-note --init ./my-notes       # явно создать каталог и открыть TUI
-note --set-default ./my-notes # сохранить существующий каталог по умолчанию и выйти
-note --list examples/notes   # простой список заметок без TUI
-note --check examples/notes  # проверить читаемость заметок и внутренние ссылки
+note                         # Open the configured folder; defaults to ~/Notes
+note .                       # Open the current folder
+note examples/notes          # Open a specific folder
+note --init                  # Explicitly create the default folder and open the TUI
+note --init ./my-notes       # Explicitly create a folder and open the TUI
+note --set-default ./my-notes # Save an existing default folder and exit
+note --list examples/notes   # List notes without the TUI
+note --check examples/notes  # Check readability and internal links
 ```
 
-Без `--init` приложение не создаёт отсутствующий каталог заметок автоматически. `--set-default` также не создаёт каталог: сначала создайте его самостоятельно или через `--init`. Относительные пути команд разрешаются относительно текущего рабочего каталога. `--check` возвращает ненулевой код при ошибках, в том числе при неработающих внутренних ссылках.
+Without `--init`, missing note folders are not created automatically.
+`--set-default` also requires an existing folder: create it yourself or use `--init`
+first. Relative command paths resolve against the current working directory.
+`--check` exits with a nonzero status for errors, including broken internal links.
 
-## Клавиши
+## Keys
 
-### Просмотр
+### Browsing
 
-| Клавиша | Действие |
+| Key | Action |
 | --- | --- |
-| ↑ / ↓ | Выбрать заметку в списке |
-| Enter | Открыть выбранную заметку в редакторе |
-| Tab | Переключить фокус между списком и предпросмотром |
-| Page Up / Page Down | Прокрутить предпросмотр |
-| ↑ / ↓ при фокусе справа | Прокрутить предпросмотр |
-| `n` | Ввести название новой заметки |
-| `/` | Включить фильтр списка |
-| `l` | Открыть выбор внутренних ссылок; Enter — перейти |
-| Alt + ← | Вернуться после перехода по ссылке |
-| `r` | Перечитать заметки с диска |
-| `q` / Ctrl + Q | Выйти |
+| ↑ / ↓ | Select a folder or note |
+| ← / → | Collapse / expand; move to parent / first child |
+| Enter | Expand/collapse a folder or edit a note |
+| Ctrl+P | Open/close the command palette; search English or Russian keywords |
+| Tab | Switch focus between navigation and preview |
+| Page Up / Page Down | Scroll preview |
+| ↑ / ↓ with preview focus | Scroll preview |
+| `n` | Enter a new note name |
+| `/` | Filter filenames |
+| `l` | Open internal links; Enter follows the selection |
+| Alt+← | Go back after following a link |
+| `r` | Reload notes from disk |
+| `q` / Ctrl+Q | Quit |
+| `?` | Open help; Enter/Esc returns to the previous screen |
 
-### Редактор и диалоги
+### Editor and dialogs
 
-| Клавиша | Действие |
+| Key | Action |
 | --- | --- |
-| Ctrl + S | Сохранить |
-| Esc | Вернуться к просмотру |
-| Ctrl + Q | Выйти, с подтверждением несохранённых изменений |
-| Ctrl + Z / Ctrl + Y | Отменить / повторить изменение |
-| `s` / `d` / `c` в диалоге изменений | Сохранить / отбросить / отменить выход |
-| Enter при создании | Проверить название и создать заметку; `.md` добавляется автоматически |
-| Esc при создании | Отменить создание |
+| Ctrl+S | Save |
+| Esc | Return to browsing |
+| Ctrl+Q | Quit, confirming unsaved changes |
+| Ctrl+Z / Ctrl+Y | Undo / redo |
+| `s` / `d` / `c` in the unsaved-changes dialog | Save / discard / cancel |
+| Enter when creating a note | Validate the name and create; `.md` is added automatically |
+| Esc when creating a note | Cancel |
 
-Создание заметки не создаёт вложенные папки. Переименование и удаление в MVP не предусмотрены: используйте файловый менеджер или терминал.
+New notes default to the selected folder or the selected file's parent. The path
+is prefilled and can be changed before creation. Creating notes does not create
+parent folders. Folder creation, renaming and deletion are not supported; use a
+file manager or terminal. TermVault's encryption, vault deletion and master-password
+commands do not apply to these plain files.
 
-В редакторе работают стрелки, Home/End, Delete/Backspace и выделение с Shift.
-Вставляйте через команду вставки вашего терминала (например, Ctrl+Shift+V):
-поддерживается bracketed paste, многострочный текст не выполняется как команды.
-Системный буфер обмена приложение само не читает. Ctrl+S, Ctrl+Q, Ctrl+Z и Ctrl+Y
-также распознают соответствующие символы стандартной русской раскладки.
-Однобуквенные команды просмотра и подтверждения пока указаны для EN-раскладки.
+The palette lists actions available on the current screen: create, find, edit,
+save, undo/redo, links, back, reload, focus, language, help and quit. Use ↑/↓ to
+select, Enter or a click to run, and Esc to cancel. Leaving the editor or quitting
+still requires a decision about unsaved changes.
 
-## Файлы, ссылки и ограничения
+Click folders to expand/collapse and notes to preview; Enter opens the editor.
+The mouse wheel scrolls navigation or preview. Terminal text selection while mouse
+capture is enabled usually requires holding Shift.
 
-- Рекурсивный список показывает относительные имена файлов, а не раскрываемое дерево: до 16 уровней; обход ограничен 10 000 записями каталогов суммарно (папки, файлы всех расширений и пропущенные элементы). При достижении лимита показывается предупреждение; усечённый набор зависит от порядка перечисления файловой системой, затем результаты сортируются.
-- Каталоги `.git`, `.hg`, `.svn`, `target`, `node_modules` и символические ссылки пропускаются.
-- Поддерживаются UTF-8-файлы `.md` и `.txt` размером до 2 МиБ, включая UTF-8 BOM и окончания строк CRLF.
-- Внутренние ссылки: `[[Ideas]]` и `[список задач](Archive/Checklist.txt)`. Примеры находятся в [`examples/notes`](examples/notes).
-- Markdown-предпросмотр базовый: заголовки, списки и блоки кода. Приложение не загружает изображения из сети, не исполняет HTML или команды из заметок.
+The editor supports arrows, Home/End, Delete/Backspace and Shift selection. Paste
+using your terminal's paste action (for example Ctrl+Shift+V). Bracketed paste is
+supported; pasted text is never executed as commands. The app does not read the
+system clipboard itself. Ctrl+S/Q/Z/Y/P also recognize the corresponding standard
+Russian keyboard characters. Single-letter commands and confirmations use the EN layout.
 
-Ссылки поддерживают подписи: `[[Ideas|Идеи]]`. При переходе нажмите `l`,
-выберите ссылку стрелками и нажмите Enter. Сначала ищется заметка рядом с текущей,
-затем путь от корня либо уникальное имя в других папках. Неоднозначная ссылка
-выдаёт ошибку: укажите папку и расширение. `../` разрешён только внутри корня.
-Внешние URL, изображения и ссылки в коде не открываются. Переход к заголовку
-внутри файла и декодирование `%20` пока не реализованы; используйте wiki-ссылки
-для названий с пробелами. Markdown-якорь в ссылке на файл не меняет позицию просмотра.
+## Files, links and limits
 
-Перед выходом из редактора несохранённые изменения требуют решения: сохранить,
-отбросить или продолжить редактирование. Сохранение использует временный файл
-в той же папке и атомарную замену; изменения файла извне обнаруживаются сравнением
-исходных байтов. При конфликте текст остаётся в редакторе, принудительной перезаписи
-нет. Это оптимистическая проверка, не блокировка: полностью исключить гонку
-с другим процессом между проверкой и заменой невозможно. Сохраняйте резервные копии.
+- The tree is derived from discovered `.md`/`.txt` files; folders without supported
+  notes are not shown. The root can be collapsed. `/` shows flat full-relative-path
+  search results, including notes in collapsed folders. Link navigation expands ancestors.
+- Traversal is limited to 16 levels and 10,000 directory entries total, counting
+  folders, files of every extension and skipped entries. A warning indicates truncation.
+  The truncated subset depends on filesystem enumeration order; results are then sorted.
+  `--list` still prints a plain relative-path list.
+- `.git`, `.hg`, `.svn`, `target`, `node_modules` and symbolic links are skipped.
+- UTF-8 `.md` and `.txt` files up to 2 MiB are supported, including UTF-8 BOM and CRLF.
+- Internal links include `[[Ideas]]` and `[checklist](Archive/Checklist.txt)`.
+  See [`examples/notes`](examples/notes).
+- Basic Markdown preview supports headings, lists and code blocks. It does not
+  download images or execute HTML or commands from notes.
 
-UTF-8 BOM и единообразные CRLF сохраняются; смешанные LF/CRLF при сохранении
-нормализуются в LF. Файлы с управляющими символами можно безопасно просматривать,
-но встроенный редактор отказывается их изменять. Автосохранения и восстановления
-после аварийного завершения пока нет. Изменения извне перечитываются клавишей `r`,
-а не файловым watcher. Названия файлов проверяются по переносимым правилам Windows.
+Wiki links support labels: `[[Ideas|My ideas]]`. Press `l`, select a link with the
+arrows and press Enter. Resolution tries a sibling note, then a root-relative path
+or a unique filename elsewhere. Ambiguous links fail: specify the folder and
+extension. `../` is allowed only within the root. External URLs, images and links
+inside code are not opened. Heading navigation and `%20` decoding are not implemented;
+use wiki links for names containing spaces. File-link anchors do not change scroll position.
 
-Чтобы большие файлы не тормозили интерфейс, предпросмотр ограничен первыми
-256 КиБ / 4096 исходными строками и показывает явную пометку об усечении.
-Сами файлы при этом не обрезаются. Редактор загружает полный файл до 2 МиБ,
-но отказывается открывать файлы длиннее 50 000 строк — используйте внешний редактор.
-Создать заметку в исключённой папке или глубже лимита обхода нельзя.
+Leaving the editor with unsaved changes requires saving, discarding or continuing
+to edit. Saves use a temporary file in the same folder and atomic replacement.
+External changes are detected by comparing the original bytes. On conflict, the
+draft stays in the editor and no forced overwrite is offered. This is an optimistic
+check, not a lock: another process can still change the file between checking and
+replacement. Keep independent backups.
 
-## Настройки
+UTF-8 BOM and consistent CRLF are preserved; mixed LF/CRLF is normalized to LF on
+save. Files containing control characters can be previewed safely, but the editor
+refuses to modify them. There is no autosave or crash recovery. Press `r` to reload
+external changes; there is no filesystem watcher. Filenames follow portable Windows rules.
 
-Файл `terminalnote/config.toml` находится в системном каталоге конфигурации пользователя, который определяет библиотека `dirs`: обычно `%APPDATA%` на Windows, `$XDG_CONFIG_HOME` или `~/.config` на Linux, `~/Library/Application Support` на macOS.
+Preview is limited to the first 256 KiB / 4,096 source lines, with a visible
+truncation notice; the file itself is not truncated. The editor loads the full file
+up to 2 MiB but refuses files over 50,000 lines; use an external editor for those.
+Notes cannot be created in excluded folders or beyond the traversal depth limit.
 
-Единственный поддерживаемый параметр — необязательная строка `root` с абсолютным путём:
+## Language and settings
+
+The TUI defaults to **English**. Open **Ctrl+P → Interface language**, then choose **English**
+or **Russian (Русский)**. The choice persists across restarts; CLI output and documentation
+remain English. Changing language preserves the configured notes root.
+Note contents, filenames, link labels and operating-system diagnostics retain
+their original text; switching language does not translate or rewrite your files.
+
+`terminalnote/config.toml` lives in the user configuration directory provided by
+`dirs`: usually `%APPDATA%` on Windows, `$XDG_CONFIG_HOME` or `~/.config` on Linux,
+and `~/Library/Application Support` on macOS.
+
+Supported settings are the optional absolute `root` path and `language` (`en` or `ru`):
 
 ```toml
 root = '/home/user/Notes'
+language = 'en'
 ```
 
-На Windows удобны буквальные TOML-строки: `root = 'C:\Users\User\Notes'`. Предпочтительный способ настройки — `note --set-default PATH`: путь проверяется, канонизируется и записывается атомарно через временный файл в том же каталоге.
+On Windows, literal TOML strings are convenient: `root = 'C:\Users\User\Notes'`.
+Prefer `note --set-default PATH`: it validates and canonicalizes the path and
+writes atomically through a temporary file in the same folder, preserving language.
 
-Если параметр отсутствует, используется `~/Notes`. Ошибочный TOML, неизвестные поля, нестроковый или относительный `root`, не-UTF-8, файл больше 64 КиБ и символическая ссылка вместо файла конфигурации отклоняются. Повреждённая конфигурация не перезаписывается автоматически: исправьте её вручную. Существование и доступность каталога заметок проверяются при открытии.
+Without `root`, the default is `~/Notes`; without `language`, it is English.
+Malformed TOML, unknown fields, invalid language values, non-string or relative
+roots, non-UTF-8, files larger than 64 KiB and configuration symlinks are rejected.
+Damaged configuration is not silently overwritten: fix it manually. The notes
+folder's existence and accessibility are checked when opening it.
 
-## Разработка
+## Development and CI/CD
 
 ```sh
 cargo fmt --all -- --check
@@ -154,8 +245,34 @@ cargo test --locked --all-targets
 cargo build --locked --release
 ```
 
-CI выполняет эти проверки на Windows и Ubuntu со стабильным Rust. Конфигурационные тесты используют временные каталоги, а не реальные пользовательские настройки.
+CI checks formatting, compilation, Clippy and tests on Windows and Linux with stable
+Rust. Configuration tests use temporary directories, never real user settings.
+For isolated tests or demos, set `TERMINALNOTE_CONFIG` to an **absolute** path to
+a separate `config.toml`; relative overrides are rejected. Without this override,
+the normal platform configuration location is unchanged. PTY tests use isolated
+settings rather than your real configuration.
+The hidden `--config-file ABSOLUTE_PATH` option explicitly selects an isolated
+configuration file and takes precedence over the environment. PTY tests use this
+argument because ConPTY environment forwarding can vary between Windows setups.
+See [release notes and packaging](docs/RELEASING.md) for tag-triggered Windows
+static-CRT and Linux archives, checksums and manual draft-release approval.
+There is no automatic public publication; editing documentation does not create a
+tag, push commits or publish a new version.
 
-## Лицензия
+To refresh screenshots on Windows (Rust and Microsoft Edge required):
+
+```powershell
+pwsh -NoProfile -File scripts/capture-docs.ps1
+```
+
+Without Edge, generate SVG files in `docs/images`:
+
+```sh
+cargo test --locked capture_documentation -- --ignored
+```
+
+Screenshot generation is opt-in; ordinary tests do not overwrite images.
+
+## License
 
 [MIT](LICENSE), © 2026 Andrey89711.

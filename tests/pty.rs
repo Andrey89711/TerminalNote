@@ -37,7 +37,10 @@ impl TerminalSession {
             .expect("native PTY must be available");
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_note"));
         command.arg(root);
+        command.arg("--config-file");
+        command.arg(root.join(".test-config/config.toml"));
         command.env("TERM", "xterm-256color");
+        command.env("TERMINALNOTE_CONFIG", root.join(".test-config/config.toml"));
         let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
         let writer = pair.master.take_writer().expect("take PTY writer");
         let child = pair
@@ -263,8 +266,8 @@ fn real_terminal_preview_links_utf8_edit_save_and_quit() {
     terminal.expect_since(0, "Second.md");
     terminal.action(b"l", "Internal links");
     terminal.action(b"\r", "SECOND_PREVIEW_MARKER");
-    // Home selects First again without relying on platform-specific Alt+Left.
-    terminal.action(b"\x1b[H", "FIRST_PREVIEW_MARKER");
+    // Home selects the tree root; Down selects First again without Alt+Left.
+    terminal.action(b"\x1b[H\x1b[B", "FIRST_PREVIEW_MARKER");
     terminal.action(b"\r", "Editing");
     let pasted = "PTY saved Кириллица ";
     terminal.action(format!("\x1b[200~{pasted}\x1b[201~").as_bytes(), "unsaved");
@@ -302,4 +305,64 @@ fn real_terminal_external_conflict_retains_edits_and_confirms_discard() {
     terminal.action(b"d", "external writer");
     terminal.quit();
     assert_eq!(fs::read_to_string(&path).unwrap(), "external writer\n");
+}
+
+#[test]
+fn real_terminal_palette_saves_without_inserting_commands_and_tree_opens_nested_note() {
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join("Work")).unwrap();
+    fs::write(root.path().join("First.md"), "ROOT_NOTE_MARKER\n").unwrap();
+    fs::write(root.path().join("Work/Inbox.md"), "NESTED_NOTE_MARKER\n").unwrap();
+    let mut terminal = TerminalSession::spawn(root.path());
+    terminal.expect_since(0, "ROOT_NOTE_MARKER");
+    terminal.action(b"\x1b[H", "Folder selected"); // Root.
+    terminal.send(b"\x1b[C"); // First child: Work.
+    terminal.send(b"\x1b[C"); // Expand Work.
+    terminal.action(b"\x1b[C", "NESTED_NOTE_MARKER"); // First child: Inbox.
+    terminal.action(b"\r", "Editing");
+    terminal.action(b"\x1b[200~PALETTE_EDIT \x1b[201~", "unsaved");
+    terminal.action(b"\x10", "Commands");
+    terminal.send(b"\x1b[200~save\x1b[201~");
+    terminal.action(b"\r", "Note saved");
+    assert_eq!(
+        fs::read_to_string(root.path().join("Work/Inbox.md")).unwrap(),
+        "PALETTE_EDIT NESTED_NOTE_MARKER\n"
+    );
+    terminal.action(b"\x1b", "Preview");
+    terminal.quit();
+}
+
+#[test]
+fn real_terminal_language_choice_is_persisted_and_loaded_on_restart() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("First.md"), "User text stays unchanged.\n").unwrap();
+    {
+        let mut terminal = TerminalSession::spawn(root.path());
+        terminal.expect_since(0, "Explorer");
+        terminal.action(b"\x10", "Commands");
+        terminal.send(b"\x1b[200~language\x1b[201~");
+        terminal.action(b"\r", "Interface language");
+        terminal.send(b"\x1b[B");
+        terminal.action(b"\r", "Язык изменён");
+        terminal.quit();
+    }
+    let config_path = root.path().join(".test-config/config.toml");
+    assert!(
+        config_path.is_file(),
+        "Language config missing; temporary root entries: {:?}",
+        fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>()
+    );
+    let config = fs::read_to_string(config_path).unwrap();
+    assert!(config.contains("language = \"ru\""));
+    let mut terminal = TerminalSession::spawn(root.path());
+    terminal.expect_since(0, "Проводник");
+    terminal.expect_since(0, "User text stays unchanged.");
+    terminal.quit();
+    assert_eq!(
+        fs::read_to_string(root.path().join("First.md")).unwrap(),
+        "User text stays unchanged.\n"
+    );
 }

@@ -1,9 +1,9 @@
-# Идеи
+# Ideas
 
-- Вести короткий дневник проекта.
-- Хранить инструкции рядом с кодом.
-- Соединять заметки внутренними ссылками: [[Welcome]].
+- Keep a short project journal.
+- Store instructions alongside the code.
+- Connect notes with internal links: [[Welcome]].
 
-## Следующий шаг
+## Next step
 
-Откройте [список задач](Archive/Checklist.txt) и выберите небольшую задачу.
+Open [the checklist](Archive/Checklist.txt) and choose a small task.
