@@ -61,8 +61,8 @@ Specify `.txt` explicitly for a plain-text note.
 
 ## Windows installer
 
-1. Download `terminalnote-v0.1.0-windows-x86_64.zip` and `SHA256SUMS.txt` from
-   [the release page](https://github.com/Andrey89711/TerminalNote/releases/tag/v0.1.0).
+1. Download `terminalnote-v0.1.1-windows-x86_64.zip` and `SHA256SUMS.txt` from
+   [the release page](https://github.com/Andrey89711/TerminalNote/releases/tag/v0.1.1).
 2. Compare the ZIP's `Get-FileHash -Algorithm SHA256` result with the published checksum.
 3. Extract the whole archive, then double-click **`setup.cmd`**. Do not run it from
    inside the ZIP. Rust and administrator permissions are not required.

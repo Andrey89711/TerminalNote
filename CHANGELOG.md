@@ -4,6 +4,19 @@
 
 No unreleased changes.
 
+## 0.1.1 — 2026-11-17
+
+- Unify shortcut and command-palette availability while preserving command ordering
+  and global quit behavior, including unsaved-change confirmation.
+- Isolate help, language and update dialogs from editor state; closing or interrupting
+  a dialog preserves drafts, cursor position and undo history.
+- Clear dialog visibility and mouse targets on resize; require fully displayed
+  consent before starting an update check.
+- Compare unsaved document state once per rendered frame, avoiding repeated work
+  for large notes without caching stale save or conflict state.
+- Expand isolated audit regressions for commands, dialogs, language-setting
+  preservation and asynchronous update results; unit tests cannot perform live HTTP.
+
 ## 0.1.0 — 2026-11-17
 
 - First published Windows installer ZIP and Linux release archives, with SHA-256 checksums.

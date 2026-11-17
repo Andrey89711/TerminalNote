@@ -39,6 +39,25 @@ const PREVIEW_BYTES: usize = 256 * 1024;
 const PREVIEW_LINES: usize = 4096;
 const EDITOR_LINES: usize = 50_000;
 
+// Filtering this shared order preserves both Browse and Edit palette ordering.
+const PALETTE_COMMAND_ORDER: [Command; 15] = [
+    Command::NewNote,
+    Command::SearchNotes,
+    Command::Refresh,
+    Command::EditNote,
+    Command::OpenLinks,
+    Command::SaveNote,
+    Command::Back,
+    Command::ToggleFocus,
+    Command::Undo,
+    Command::Redo,
+    Command::Language,
+    Command::Help,
+    Command::Quit,
+    Command::CheckUpdates,
+    Command::UpdateResult,
+];
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mode {
     Browse,
@@ -47,10 +66,36 @@ enum Mode {
     New,
     Links,
     Confirm { quit: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum OverlayKind {
     Help,
     Language,
     UpdateConsent,
     UpdateResult,
+}
+
+// Dialog lifetime and rendered hit targets never belong to the underlying editor.
+// Closing or interrupting a dialog drops all of its temporary interaction state.
+struct Overlay {
+    kind: OverlayKind,
+    return_mode: Mode,
+    visible: bool,
+    selected: usize,
+    hits: Vec<(Rect, usize)>,
+}
+
+impl Overlay {
+    fn new(kind: OverlayKind, return_mode: Mode) -> Self {
+        Self {
+            kind,
+            return_mode,
+            visible: false,
+            selected: 0,
+            hits: Vec::new(),
+        }
+    }
 }
 
 struct App {
@@ -80,17 +125,14 @@ struct App {
     expanded: HashSet<PathBuf>,
     explorer_focus: Option<Node>,
     explorer_hits: Vec<(Rect, Node)>,
-    help_return: Option<Mode>,
+    overlay: Option<Overlay>,
     language: Language,
     config_file: Option<PathBuf>,
-    language_return: Option<Mode>,
-    language_selected: usize,
-    language_visible: bool,
-    language_hits: Vec<(Rect, usize)>,
     update_rx: Option<Receiver<updates::CheckResult>>,
     update_result: Option<UpdateStatus>,
-    update_return: Option<Mode>,
-    update_consent_visible: bool,
+    #[cfg(test)]
+    dirty_comparisons: std::cell::Cell<usize>,
+    update_worker: fn() -> Result<Receiver<updates::CheckResult>>,
 }
 
 impl App {
@@ -122,18 +164,21 @@ impl App {
             expanded: HashSet::from([PathBuf::new()]),
             explorer_focus: None,
             explorer_hits: Vec::new(),
-            help_return: None,
+            overlay: None,
             language: Language::English,
             config_file: None,
-            language_return: None,
-            language_selected: 0,
-            language_visible: false,
-            language_hits: Vec::new(),
             update_rx: None,
             update_result: None,
-            update_return: None,
-            update_consent_visible: false,
+            #[cfg(test)]
+            dirty_comparisons: std::cell::Cell::new(0),
+            update_worker: updates::start_check,
         };
+        // Unit tests cannot accidentally perform a live check, even after visible consent.
+        #[cfg(test)]
+        {
+            app.update_worker =
+                || panic!("Tests must inject an update worker; live HTTP is forbidden");
+        }
         app.refresh(None)?;
         Ok(app)
     }
@@ -147,10 +192,14 @@ impl App {
         self.language.text(english, russian)
     }
     fn select_language(&mut self) {
-        if !self.language_visible {
+        let Some(overlay) = self
+            .overlay
+            .as_ref()
+            .filter(|overlay| overlay.kind == OverlayKind::Language && overlay.visible)
+        else {
             return;
-        }
-        let language = if self.language_selected == 0 {
+        };
+        let language = if overlay.selected == 0 {
             Language::English
         } else {
             Language::Russian
@@ -168,7 +217,7 @@ impl App {
             }
         }
         self.language = language;
-        self.mode = self.language_return.take().unwrap_or(Mode::Browse);
+        self.close_overlay();
         self.message(self.tr("Language changed", "Язык изменён"), false);
         if self.editor.is_none() {
             let scroll = self.scroll;
@@ -348,7 +397,7 @@ impl App {
                 }
             }
         } else if toggle {
-            self.start_edit();
+            self.execute_command(Command::EditNote);
         }
     }
     fn parent_explorer(&mut self) {
@@ -400,6 +449,8 @@ impl App {
         self.editor.as_ref().map(|editor| editor.lines().join("\n"))
     }
     fn dirty(&self) -> bool {
+        #[cfg(test)]
+        self.dirty_comparisons.set(self.dirty_comparisons.get() + 1);
         self.document
             .as_ref()
             .zip(self.editor.as_ref())
@@ -443,7 +494,7 @@ impl App {
 
     fn leave_editor(&mut self, quit: bool) {
         self.palette = None;
-        self.update_return = None;
+        self.overlay = None;
         if self.dirty() {
             self.mode = Mode::Confirm { quit };
         } else {
@@ -557,52 +608,60 @@ impl App {
         self.filter(Some(path));
     }
 
-    fn available_commands(&self) -> Vec<Command> {
-        let mut commands = match self.mode {
-            Mode::Browse => {
-                let mut commands = vec![Command::NewNote, Command::SearchNotes, Command::Refresh];
-                if self.document.is_some() {
-                    commands.extend([Command::EditNote, Command::OpenLinks]);
-                }
-                if !self.history.is_empty() {
-                    commands.push(Command::Back);
-                }
-                commands.extend([
-                    Command::ToggleFocus,
-                    Command::Language,
-                    Command::Help,
-                    Command::Quit,
-                ]);
-                commands
+    // Contextual availability is shared by shortcuts and palette enumeration.
+    // Global Quit intentionally bypasses this policy in execute_command.
+    fn command_available(&self, command: Command) -> bool {
+        if self.overlay.is_some() {
+            return false;
+        }
+        match command {
+            Command::NewNote | Command::SearchNotes | Command::Refresh | Command::ToggleFocus => {
+                self.mode == Mode::Browse
             }
-            Mode::Edit => vec![
-                Command::SaveNote,
-                Command::Back,
-                Command::Undo,
-                Command::Redo,
-                Command::Language,
-                Command::Help,
-                Command::Quit,
-            ],
-            _ => Vec::new(),
-        };
-        if matches!(self.mode, Mode::Browse | Mode::Edit) {
-            commands.push(Command::CheckUpdates);
-            if self.update_result.is_some() {
-                commands.push(Command::UpdateResult);
+            Command::EditNote | Command::OpenLinks => {
+                self.mode == Mode::Browse && self.document.is_some()
+            }
+            Command::SaveNote | Command::Undo | Command::Redo => self.mode == Mode::Edit,
+            Command::Back => {
+                self.mode == Mode::Edit || (self.mode == Mode::Browse && !self.history.is_empty())
+            }
+            Command::Language | Command::Help | Command::Quit | Command::CheckUpdates => {
+                matches!(self.mode, Mode::Browse | Mode::Edit)
+            }
+            Command::UpdateResult => {
+                matches!(self.mode, Mode::Browse | Mode::Edit) && self.update_result.is_some()
             }
         }
-        commands
+    }
+    fn available_commands(&self) -> Vec<Command> {
+        PALETTE_COMMAND_ORDER
+            .into_iter()
+            .filter(|command| self.command_available(*command))
+            .collect()
     }
     fn open_palette(&mut self) {
-        if self.available_commands().is_empty() {
+        if !PALETTE_COMMAND_ORDER
+            .into_iter()
+            .any(|command| self.command_available(command))
+        {
             return;
         }
         self.palette = Some(Palette::default());
         self.palette_visible = false;
     }
     fn execute_command(&mut self, command: Command) {
-        if !self.available_commands().contains(&command) {
+        // Quit is global, including dialogs, input modes and the palette.
+        if command == Command::Quit {
+            self.palette = None;
+            self.overlay = None;
+            if self.editor.is_some() {
+                self.leave_editor(true);
+            } else {
+                self.exit = true;
+            }
+            return;
+        }
+        if !self.command_available(command) {
             return;
         }
         self.palette = None;
@@ -658,35 +717,24 @@ impl App {
                         false,
                     );
                 } else {
-                    self.update_return = Some(self.mode);
-                    self.update_consent_visible = false;
-                    self.mode = Mode::UpdateConsent;
+                    self.open_overlay(OverlayKind::UpdateConsent);
                 }
             }
             Command::UpdateResult => {
-                self.update_return = Some(self.mode);
-                self.mode = Mode::UpdateResult;
+                self.open_overlay(OverlayKind::UpdateResult);
             }
             Command::Help => {
-                self.help_return = Some(self.mode);
-                self.mode = Mode::Help;
+                self.open_overlay(OverlayKind::Help);
             }
             Command::Language => {
                 self.status.clear();
                 self.notice_until = None;
                 self.error = false;
-                self.language_return = Some(self.mode);
-                self.language_selected = usize::from(self.language == Language::Russian);
-                self.language_visible = false;
-                self.mode = Mode::Language;
+                self.open_overlay(OverlayKind::Language);
+                self.overlay.as_mut().unwrap().selected =
+                    usize::from(self.language == Language::Russian);
             }
-            Command::Quit => {
-                if self.editor.is_some() {
-                    self.leave_editor(true);
-                } else {
-                    self.exit = true;
-                }
-            }
+            Command::Quit => unreachable!("global quit handled above"),
             Command::Undo => {
                 if let Some(editor) = &mut self.editor {
                     editor.undo();
@@ -715,19 +763,28 @@ impl App {
             _ => self.palette.as_mut().unwrap().key(key, commands.len()),
         }
     }
-    fn close_update_dialog(&mut self) {
-        self.mode = self.update_return.take().unwrap_or(Mode::Browse);
+    fn open_overlay(&mut self, kind: OverlayKind) {
+        self.overlay = Some(Overlay::new(kind, self.mode));
+    }
+    fn close_overlay(&mut self) {
+        if let Some(overlay) = self.overlay.take() {
+            self.mode = overlay.return_mode;
+        }
     }
     fn start_update_check(&mut self) {
-        if !self.update_consent_visible {
+        if !self
+            .overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.kind == OverlayKind::UpdateConsent && overlay.visible)
+        {
             return;
         }
-        self.close_update_dialog();
+        self.close_overlay();
         if self.update_rx.is_some() {
             return;
         }
         self.update_result = None;
-        match updates::start_check() {
+        match (self.update_worker)() {
             Ok(receiver) => {
                 self.update_rx = Some(receiver);
                 self.message(
@@ -815,12 +872,7 @@ impl App {
                 .modifiers
                 .intersects(KeyModifiers::ALT | KeyModifiers::SUPER);
         if ctrl && ctrl_char(key) == Some('q') {
-            self.palette = None;
-            if self.editor.is_some() {
-                self.leave_editor(true);
-            } else {
-                self.exit = true;
-            }
+            self.execute_command(Command::Quit);
             return;
         }
         if ctrl && ctrl_char(key) == Some('p') {
@@ -835,42 +887,43 @@ impl App {
             self.palette_key(key);
             return;
         }
+        if let Some(overlay) = &self.overlay {
+            match overlay.kind {
+                OverlayKind::UpdateConsent => match key.code {
+                    KeyCode::Esc => self.close_overlay(),
+                    KeyCode::Enter => self.start_update_check(),
+                    _ => {}
+                },
+                OverlayKind::UpdateResult => {
+                    if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+                        self.close_overlay();
+                    }
+                }
+                OverlayKind::Language => match key.code {
+                    KeyCode::Esc => self.close_overlay(),
+                    KeyCode::Up | KeyCode::BackTab => self.overlay.as_mut().unwrap().selected = 0,
+                    KeyCode::Down | KeyCode::Tab => self.overlay.as_mut().unwrap().selected = 1,
+                    KeyCode::Enter => self.select_language(),
+                    _ => {}
+                },
+                OverlayKind::Help => {
+                    if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?')) {
+                        self.close_overlay();
+                    }
+                }
+            }
+            return;
+        }
         match self.mode {
-            Mode::UpdateConsent => match key.code {
-                KeyCode::Esc => self.close_update_dialog(),
-                KeyCode::Enter => self.start_update_check(),
-                _ => {}
-            },
-            Mode::UpdateResult => {
-                if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
-                    self.close_update_dialog();
-                }
-            }
-            Mode::Language => match key.code {
-                KeyCode::Esc => self.mode = self.language_return.take().unwrap_or(Mode::Browse),
-                KeyCode::Up | KeyCode::BackTab => self.language_selected = 0,
-                KeyCode::Down | KeyCode::Tab => self.language_selected = 1,
-                KeyCode::Enter => self.select_language(),
-                _ => {}
-            },
-            Mode::Help => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?')) {
-                    self.mode = self.help_return.take().unwrap_or(Mode::Browse);
-                }
-            }
             Mode::Edit => {
                 if key.code == KeyCode::Esc {
-                    self.leave_editor(false);
+                    self.execute_command(Command::Back);
                 } else if ctrl && ctrl_char(key) == Some('s') {
-                    self.save();
+                    self.execute_command(Command::SaveNote);
                 } else if ctrl && ctrl_char(key) == Some('z') {
-                    if let Some(editor) = &mut self.editor {
-                        editor.undo();
-                    }
+                    self.execute_command(Command::Undo);
                 } else if ctrl && ctrl_char(key) == Some('y') {
-                    if let Some(editor) = &mut self.editor {
-                        editor.redo();
-                    }
+                    self.execute_command(Command::Redo);
                 } else if let Some(editor) = &mut self.editor {
                     editor.input(key);
                 }
@@ -924,7 +977,7 @@ impl App {
                 _ => {}
             },
             Mode::Browse => match key.code {
-                KeyCode::Char('q') => self.exit = true,
+                KeyCode::Char('q') => self.execute_command(Command::Quit),
                 KeyCode::Up if self.preview_focus => self.scroll = self.scroll.saturating_sub(1),
                 KeyCode::Down if self.preview_focus => self.scroll = self.scroll.saturating_add(1),
                 KeyCode::Up => self.select(-1),
@@ -951,7 +1004,7 @@ impl App {
                 }
                 KeyCode::PageDown => self.scroll = self.scroll.saturating_add(12),
                 KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(12),
-                KeyCode::Tab | KeyCode::BackTab => self.preview_focus = !self.preview_focus,
+                KeyCode::Tab | KeyCode::BackTab => self.execute_command(Command::ToggleFocus),
                 KeyCode::Enter if self.query.is_empty() && !self.preview_focus => {
                     self.open_explorer(true)
                 }
@@ -963,31 +1016,18 @@ impl App {
                 {
                     self.parent_explorer()
                 }
-                KeyCode::Enter => self.start_edit(),
+                KeyCode::Enter => self.execute_command(Command::EditNote),
                 KeyCode::Char('n') => self.execute_command(Command::NewNote),
                 KeyCode::Char('/') => self.execute_command(Command::SearchNotes),
                 KeyCode::Esc => {
                     self.query.clear();
                     self.filter(None);
                 }
-                KeyCode::Char('l') => self.open_links(),
+                KeyCode::Char('l') => self.execute_command(Command::OpenLinks),
                 KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                    if let Some(path) = self.history.pop() {
-                        self.navigate(path);
-                    }
+                    self.execute_command(Command::Back);
                 }
-                KeyCode::Char('r') => {
-                    self.message(self.tr("Notes refreshed", "Заметки перечитаны"), false);
-                    if let Err(e) = self.refresh(None) {
-                        self.message(
-                            format!(
-                                "{}: {e}",
-                                self.tr("Refresh failed", "Не удалось перечитать заметки")
-                            ),
-                            true,
-                        );
-                    }
-                }
+                KeyCode::Char('r') => self.execute_command(Command::Refresh),
                 KeyCode::Char('?') => self.execute_command(Command::Help),
                 _ => {}
             },
@@ -1002,6 +1042,9 @@ impl App {
     }
 
     fn paste(&mut self, text: String) {
+        if self.overlay.is_some() {
+            return;
+        }
         if let Some(palette) = &mut self.palette {
             palette.paste(&text);
             return;
@@ -1055,14 +1098,14 @@ impl App {
 
     fn mouse(&mut self, event: MouseEvent) {
         let point = (event.column, event.row).into();
-        if self.mode == Mode::Language {
-            if event.kind == MouseEventKind::Down(MouseButton::Left) {
-                if let Some((_, index)) = self
-                    .language_hits
-                    .iter()
-                    .find(|(rect, _)| rect.contains(point))
+        if let Some(overlay) = &mut self.overlay {
+            if overlay.kind == OverlayKind::Language
+                && overlay.visible
+                && event.kind == MouseEventKind::Down(MouseButton::Left)
+            {
+                if let Some((_, index)) = overlay.hits.iter().find(|(rect, _)| rect.contains(point))
                 {
-                    self.language_selected = *index;
+                    overlay.selected = *index;
                     self.select_language();
                 }
             }
@@ -1379,12 +1422,15 @@ impl App {
         self.palette_visible = true;
     }
     fn draw(&mut self, frame: &mut Frame) {
-        self.update_consent_visible = false;
-        self.language_visible = false;
-        self.language_hits.clear();
+        if let Some(overlay) = &mut self.overlay {
+            overlay.visible = false;
+            overlay.hits.clear();
+        }
         self.palette_visible = false;
         self.palette_hits.clear();
         self.explorer_hits.clear();
+        // A frame-local snapshot: undo, saves and conflicts require no cache invalidation.
+        let dirty = self.dirty();
         let area = frame.area();
         frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
         if area.width < 60 || area.height < 12 {
@@ -1432,12 +1478,12 @@ impl App {
                 Style::default().fg(theme::MUTED),
             ),
             Span::styled(
-                if self.dirty() {
+                if dirty {
                     self.tr(" · unsaved", " · не сохранено")
                 } else {
                     self.tr(" · local", " · локально")
                 },
-                Style::default().fg(if self.dirty() {
+                Style::default().fg(if dirty {
                     theme::WARNING
                 } else {
                     theme::SUCCESS
@@ -1446,7 +1492,6 @@ impl App {
         ]);
         frame.render_widget(Paragraph::new(heading), parts[0]);
         if self.editor.is_some() {
-            let dirty = self.dirty();
             let name = self
                 .document
                 .as_ref()
@@ -1525,7 +1570,12 @@ impl App {
             frame.render_widget(&preview, panels[1]);
             self.preview = preview;
         }
-        let help = if matches!(self.mode, Mode::UpdateConsent | Mode::UpdateResult) {
+        let help = if self.overlay.as_ref().is_some_and(|overlay| {
+            matches!(
+                overlay.kind,
+                OverlayKind::UpdateConsent | OverlayKind::UpdateResult
+            )
+        }) {
             self.tr(
                 " Enter continue · Esc back ",
                 " Enter продолжить · Esc назад ",
@@ -1537,22 +1587,22 @@ impl App {
         };
         frame.render_widget(Paragraph::new(help).style(theme::dim()), parts[2]);
         self.draw_notice(frame);
-        match self.mode {
-            Mode::UpdateConsent => {
+        match self.overlay.as_ref().map(|overlay| overlay.kind) {
+            Some(OverlayKind::UpdateConsent) => {
                 let text = self.tr("Send a request to api.github.com?\n\nGitHub receives your IP address and TerminalNote/version User-Agent.\nNotes, filenames, folder paths and settings are NOT sent.\n\nOnly this command starts the check. Timeout: 10 seconds.\nNo automatic downloads, execution or installation.\n\n[Enter] Check   [Esc] Cancel", "Отправить запрос к api.github.com?\n\nGitHub получит ваш IP и User-Agent TerminalNote/версия.\nЗаметки, имена файлов, пути папок и настройки НЕ передаются.\n\nПроверка запускается только этой командой. Тайм-аут: 10 секунд.\nНет автоматического скачивания, запуска или установки.\n\n[Enter] Проверить   [Esc] Отмена");
                 let height = Paragraph::new(text).wrap(Wrap { trim: false }).line_count(area.width.min(82).saturating_sub(2)) + 2;
                 if height > usize::from(area.height.saturating_sub(2)) {
                     popup(frame, self.tr("Resize the window to see the full consent text.\n\nEsc cancels; Enter is disabled.", "Увеличьте окно, чтобы увидеть полный текст согласия.\n\nEsc — отмена; Enter заблокирован."), self.tr(" Check blocked ", " Проверка заблокирована "), 8);
                 } else {
                     popup(frame, text, self.tr(" Check for updates ", " Проверить обновления "), height as u16);
-                    self.update_consent_visible = true;
+                    self.overlay.as_mut().unwrap().visible = true;
                 }
             }
-            Mode::UpdateResult => {
+            Some(OverlayKind::UpdateResult) => {
                 let text = self.update_result.as_ref().map(|status| status.description(self.language)).unwrap_or_else(|| self.tr("No update result yet.", "Результат проверки отсутствует.").into());
                 popup(frame, &format!("{text}\n\n{}", self.tr("Enter / Esc — back", "Enter / Esc — назад")), self.tr(" Updates ", " Обновления "), 18);
             }
-            Mode::Language => {
+            Some(OverlayKind::Language) => {
                 dim_backdrop(frame);
                 let rect = centered(area, 54, 8);
                 frame.render_widget(Clear, rect);
@@ -1560,13 +1610,16 @@ impl App {
                 let inner = block.inner(rect);
                 frame.render_widget(block, rect);
                 let rows = Layout::vertical([Constraint::Min(2), Constraint::Length(2)]).split(inner);
-                frame.render_stateful_widget(List::new([ListItem::new("English"), ListItem::new("Русский")]).style(theme::surface()).highlight_style(theme::selected()).highlight_symbol("› "), rows[0], &mut ListState::default().with_selected(Some(self.language_selected)));
-                for index in 0..2 { self.language_hits.push((Rect::new(rows[0].x, rows[0].y + index as u16, rows[0].width, 1), index)); }
+                frame.render_stateful_widget(List::new([ListItem::new("English"), ListItem::new("Русский")]).style(theme::surface()).highlight_style(theme::selected()).highlight_symbol("› "), rows[0], &mut ListState::default().with_selected(Some(self.overlay.as_ref().unwrap().selected)));
+                for index in 0..2 { self.overlay.as_mut().unwrap().hits.push((Rect::new(rows[0].x, rows[0].y + index as u16, rows[0].width, 1), index)); }
                 let hint = if self.error { crate::safe(&self.status) } else { self.tr("↑↓ select · Enter apply · Esc cancel", "↑↓ выбор · Enter применить · Esc отмена").into() };
                 frame.render_widget(Paragraph::new(hint).style(theme::surface().fg(if self.error { theme::ERROR } else { theme::MUTED })).wrap(Wrap { trim: false }), rows[1]);
-                self.language_visible = true;
+                self.overlay.as_mut().unwrap().visible = true;
             }
-            Mode::Help => popup(frame, self.tr("Ctrl+P  Search commands (English / Russian)\n\n↑↓ select folder / note · ←→ collapse / expand\nEnter edit / open · n new note · / filter paths\nTab preview focus · PgUp/PgDn scroll · l internal links\nAlt+← history · r refresh · Ctrl+Q quit\n\nEditor: Ctrl+S save · Esc return · Ctrl+Z/Y undo/redo\nUnsaved changes always require save/discard confirmation.\nNotes are local plain-text files, not encrypted.\n\nEnter / Esc — back", "Ctrl+P  Поиск команд (английский / русский)\n\n↑↓ выбор папки / заметки · ←→ свернуть / раскрыть\nEnter открыть · n новая заметка · / поиск по пути\nTab фокус просмотра · PgUp/PgDn прокрутка · l ссылки\nAlt+← история · r перечитать · Ctrl+Q выход\n\nРедактор: Ctrl+S сохранить · Esc назад · Ctrl+Z/Y отмена/повтор\nНесохранённые правки требуют подтверждения выхода.\nЗаметки — незашифрованные локальные текстовые файлы.\n\nEnter / Esc — назад"), self.tr(" Help ", " Справка "), 16),
+            Some(OverlayKind::Help) => popup(frame, self.tr("Ctrl+P  Search commands (English / Russian)\n\n↑↓ select folder / note · ←→ collapse / expand\nEnter edit / open · n new note · / filter paths\nTab preview focus · PgUp/PgDn scroll · l internal links\nAlt+← history · r refresh · Ctrl+Q quit\n\nEditor: Ctrl+S save · Esc return · Ctrl+Z/Y undo/redo\nUnsaved changes always require save/discard confirmation.\nNotes are local plain-text files, not encrypted.\n\nEnter / Esc — back", "Ctrl+P  Поиск команд (английский / русский)\n\n↑↓ выбор папки / заметки · ←→ свернуть / раскрыть\nEnter открыть · n новая заметка · / поиск по пути\nTab фокус просмотра · PgUp/PgDn прокрутка · l ссылки\nAlt+← история · r перечитать · Ctrl+Q выход\n\nРедактор: Ctrl+S сохранить · Esc назад · Ctrl+Z/Y отмена/повтор\nНесохранённые правки требуют подтверждения выхода.\nЗаметки — незашифрованные локальные текстовые файлы.\n\nEnter / Esc — назад"), self.tr(" Help ", " Справка "), 16),
+            None => {}
+        }
+        match self.mode {
             Mode::Search | Mode::New => {
                 let title = if self.mode == Mode::Search { self.tr(" Filter filenames · Enter apply · Esc clear ", " Поиск по имени · Enter применить · Esc сброс ") } else { self.tr(" New note · Enter create · Esc cancel ", " Новая заметка · Enter создать · Esc отмена ") };
                 let content = format!("{}▏\n{}", crate::safe(&self.input), if self.mode == Mode::New { self.tr("Name.md or existing-folder/Name.txt (default: .md)", "Имя.md или папка/Имя.txt (по умолчанию: .md)") } else { self.tr("Case-insensitive · includes relative folder names", "Без учёта регистра · включая имена папок") });
@@ -1776,26 +1829,30 @@ pub fn run(store: NoteStore, config_override: Option<PathBuf>) -> Result<()> {
 mod screenshots;
 
 #[cfg(test)]
+#[path = "app_regressions.rs"]
+mod regressions;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    fn key(code: KeyCode) -> KeyEvent {
+    pub(super) fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
-    fn app() -> (tempfile::TempDir, App) {
+    pub(super) fn app() -> (tempfile::TempDir, App) {
         let root = tempdir().unwrap();
         std::fs::write(root.path().join("First.md"), "# First\n\n[[Second]]\n").unwrap();
         std::fs::write(root.path().join("Second.txt"), "Second note").unwrap();
         let app = App::new(NoteStore::open(root.path()).unwrap()).unwrap();
         (root, app)
     }
-    fn rendered(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    pub(super) fn rendered(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
         let mut terminal =
             Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
         terminal.backend().buffer().clone()
     }
-    fn screen(buffer: &ratatui::buffer::Buffer) -> String {
+    pub(super) fn screen(buffer: &ratatui::buffer::Buffer) -> String {
         buffer.content().iter().map(|cell| cell.symbol()).collect()
     }
     fn palette_command(app: &mut App, query: &str) {
@@ -1816,7 +1873,7 @@ mod tests {
         app.execute_command(Command::Refresh);
         assert_eq!(app.edited_text().unwrap(), draft);
         palette_command(&mut app, "справка");
-        assert_eq!(app.mode, Mode::Help);
+        assert_eq!(app.overlay.as_ref().unwrap().kind, OverlayKind::Help);
         app.key(key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Edit);
         assert_eq!(app.edited_text().unwrap(), draft);
@@ -1842,16 +1899,19 @@ mod tests {
         app.paste("Unsaved draft ".into());
         let draft = app.edited_text();
         palette_command(&mut app, "check updates");
-        assert_eq!(app.mode, Mode::UpdateConsent);
+        assert_eq!(
+            app.overlay.as_ref().unwrap().kind,
+            OverlayKind::UpdateConsent
+        );
         app.key(key(KeyCode::Enter)); // No consent has been rendered.
         assert!(app.update_rx.is_none());
         let _ = rendered(&mut app, 60, 12);
-        assert!(!app.update_consent_visible);
+        assert!(!app.overlay.as_ref().unwrap().visible);
         app.key(key(KeyCode::Enter));
         assert!(app.update_rx.is_none());
         let text = screen(&rendered(&mut app, 110, 32));
         assert!(text.contains("api.github.com"));
-        assert!(app.update_consent_visible);
+        assert!(app.overlay.as_ref().unwrap().visible);
         app.key(key(KeyCode::Esc)); // Never accept consent in a test: no HTTP requests.
         assert_eq!(app.mode, Mode::Edit);
         assert_eq!(app.edited_text(), draft);
@@ -1872,7 +1932,10 @@ mod tests {
         assert_eq!(app.mode, Mode::Edit);
         assert_eq!(app.edited_text(), draft);
         palette_command(&mut app, "update result");
-        assert_eq!(app.mode, Mode::UpdateResult);
+        assert_eq!(
+            app.overlay.as_ref().unwrap().kind,
+            OverlayKind::UpdateResult
+        );
         assert!(screen(&rendered(&mut app, 110, 32)).contains("99.0.0"));
         app.key(key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Edit);
@@ -1894,7 +1957,7 @@ mod tests {
         app.update_rx = Some(receiver);
         app.execute_command(Command::CheckUpdates);
         assert_eq!(app.mode, Mode::Browse);
-        assert!(app.update_return.is_none());
+        assert!(app.overlay.is_none());
         assert!(app.status.contains("already running"));
         app.start_edit();
         app.paste("draft".into());
@@ -1907,6 +1970,9 @@ mod tests {
         let (root, mut app) = app();
         assert_eq!(app.language, Language::English);
         let config = root.path().join("settings/config.toml");
+        crate::config::set_default_root_at(root.path(), &config).unwrap();
+        let configured_root = crate::config::default_root_at(&config).unwrap();
+        let original_config = std::fs::read(&config).unwrap();
         app.config_file = Some(config.clone());
         app.start_edit();
         app.paste("Пользовательский текст / user text ".into());
@@ -1914,17 +1980,21 @@ mod tests {
         let original = std::fs::read(root.path().join("First.md")).unwrap();
         let expansion = app.expanded.clone();
         palette_command(&mut app, "language");
-        assert_eq!(app.mode, Mode::Language);
+        assert_eq!(app.overlay.as_ref().unwrap().kind, OverlayKind::Language);
         app.key(key(KeyCode::Down));
         app.key(key(KeyCode::Enter)); // Invisible choices cannot change settings.
         assert_eq!(app.language, Language::English);
-        assert!(!config.exists());
+        assert_eq!(std::fs::read(&config).unwrap(), original_config);
         let _ = rendered(&mut app, 110, 32);
         app.key(key(KeyCode::Enter));
         assert_eq!(app.language, Language::Russian);
         assert_eq!(
             crate::config::language_at(&config).unwrap(),
             Language::Russian
+        );
+        assert_eq!(
+            crate::config::default_root_at(&config).unwrap(),
+            configured_root
         );
         assert_eq!(app.mode, Mode::Edit);
         assert_eq!(app.edited_text().unwrap(), draft);
@@ -1955,7 +2025,7 @@ mod tests {
         let _ = rendered(&mut app, 110, 32);
         app.key(key(KeyCode::Enter));
         assert_eq!(app.language, Language::English);
-        assert_eq!(app.mode, Mode::Language);
+        assert_eq!(app.overlay.as_ref().unwrap().kind, OverlayKind::Language);
         assert!(app.error);
         assert_eq!(
             std::fs::read_to_string(config).unwrap(),
