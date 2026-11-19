@@ -7,6 +7,7 @@ mod links;
 mod markdown;
 mod storage;
 mod theme;
+mod update_install;
 mod updates;
 
 use anyhow::{bail, Context, Result};
@@ -56,6 +57,9 @@ fn expand_path(path: PathBuf) -> Result<PathBuf> {
 }
 
 fn run() -> Result<()> {
+    if update_install::helper_entry()? {
+        return Ok(());
+    }
     let cli = Cli::parse();
     if cli
         .config_file

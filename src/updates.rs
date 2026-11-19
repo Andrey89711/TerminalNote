@@ -1,4 +1,4 @@
-//! Caller-triggered, read-only release metadata checks. No downloads or installation.
+//! Caller-triggered release metadata checks, separate from consented download/installation.
 use crate::i18n::Language;
 use anyhow::{anyhow, bail, Result};
 use semver::Version;
@@ -37,8 +37,8 @@ impl UpdateStatus {
                 language.text("Installed:", "Установлена:"),
                 language.text("Release page:", "Страница релиза:"),
                 language.text(
-                    "No automatic download or installation.",
-                    "Скачивание и установка автоматически не выполняются."
+                    "Download and installation each require separate consent. Packages are unsigned.",
+                    "Скачивание и установка требуют отдельных согласий. Пакеты не подписаны."
                 )
             ),
             Self::NoRelease => language

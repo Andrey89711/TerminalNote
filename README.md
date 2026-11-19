@@ -61,8 +61,8 @@ Specify `.txt` explicitly for a plain-text note.
 
 ## Windows installer
 
-1. Download `terminalnote-v0.1.1-windows-x86_64.zip` and `SHA256SUMS.txt` from
-   [the release page](https://github.com/Andrey89711/TerminalNote/releases/tag/v0.1.1).
+1. Download `terminalnote-v0.1.2-windows-x86_64.zip` and `SHA256SUMS.txt` from
+   [the release page](https://github.com/Andrey89711/TerminalNote/releases/tag/v0.1.2).
 2. Compare the ZIP's `Get-FileHash -Algorithm SHA256` result with the published checksum.
 3. Extract the whole archive, then double-click **`setup.cmd`**. Do not run it from
    inside the ZIP. Rust and administrator permissions are not required.
@@ -261,7 +261,7 @@ roots, non-UTF-8, files larger than 64 KiB and configuration symlinks are reject
 Damaged configuration is not silently overwritten: fix it manually. The notes
 folder's existence and accessibility are checked when opening it.
 
-## Manual update checks
+## Manual in-app updates
 
 Use **Ctrl+P → Check for updates**. A separate consent dialog explains the request
 before it starts; Esc cancels. GitHub receives your IP address and a
@@ -269,11 +269,45 @@ before it starts; Esc cancels. GitHub receives your IP address and a
 configuration are sent. The request uses HTTPS with redirects disabled, a 64 KiB
 response limit and a 10-second timeout.
 
-There are no startup/scheduled checks, automatic downloads, program execution or
-automatic installation. The background result never interrupts an editor draft;
-open **Update check result** through Ctrl+P to see the stable version and fixed
-GitHub release link. Update information is advisory HTTPS metadata, not signed
-update authorization. Download, verify and install a new version yourself.
+There are no startup or scheduled checks. The background result never interrupts
+an editor draft. Open **Update check result** through Ctrl+P, then Enter to review
+the separate **download consent**. On Windows x86_64 this downloads only a newer
+stable `terminalnote-vX.Y.Z-windows-x86_64.zip` and `SHA256SUMS.txt` from
+`Andrey89711/TerminalNote`. GitHub and its `release-assets.githubusercontent.com`
+download service receive your IP and app/version, never notes or settings.
+Every HTTPS redirect is checked; archive downloads are bounded to 64 MiB and
+90 seconds per request. SHA256, the exact package file list, regular-file types,
+CRC, expanded sizes and compression ratios are checked before staging.
+
+**Packages are unsigned. Checksums from the same GitHub release detect corruption,
+not publisher authenticity or a compromised release account.**
+
+After verification, open the result again and review the separate **install and
+restart consent**. Small windows cannot accept a truncated confirmation.
+Unsaved notes still require Save/Discard; Cancel keeps the draft.
+Only after consent does the app run the staged executable's version probe and
+launch a local copy of the current executable as its native Windows helper.
+No PowerShell or downloaded installer script executes.
+
+The helper runs without administrator rights from a current-user-owned stage in
+Local AppData, rejects symlinks/junctions and unowned targets, binds the exact
+running executable to its PID, and waits for exit before replacing `note.exe`.
+It retries locked files for 30 seconds, writes the complete replacement before
+moving the original, and rolls back a failed replacement. Restart preserves the
+original arguments and working directory. Notes, configuration, language, PATH,
+installer scripts/ownership metadata, documentation and unknown files are not
+modified. This is an **executable-only update**, not a full installer upgrade.
+Existing installation ownership markers are validated but retained unchanged.
+Use the normal release installer if you also want updated installer/support files.
+
+Downloaded stages are removed when cancelled/closed before installation. Once
+handed to the helper, `terminalnote-update-*` stages remain in Local AppData for
+diagnosis (including a local plan containing executable path/launch arguments);
+they can be removed after the helper exits. Installation is supported only on
+Windows x86_64 with a writable, current-user-owned `note.exe` and program folder.
+Other platforms explicitly decline installation; metadata checks remain available.
+Install the first version containing this updater once using `setup.cmd`;
+earlier versions can only check for updates and open the release page.
 
 ## Development and CI/CD
 

@@ -1,8 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.2
 
-No unreleased changes.
+- Explicit Windows in-app update downloads with SHA-256 and archive validation,
+  separate install/restart consent and unsaved-draft confirmation.
+- Native PID-bound helper replacement/relaunch with rollback and transient-lock
+  retries; executable-only updates retain notes, configuration and support files.
+- Regression coverage for stale handoff artifacts, exclusive locks, cancellation
+  and isolated native apply/relaunch.
 
 ## 0.1.1 — 2026-11-17
 
