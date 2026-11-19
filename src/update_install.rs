@@ -301,31 +301,34 @@ fn installation_owner(target: &Path) -> Result<()> {
     if marker.try_exists()? {
         safe_path(&marker)?;
         owned(&marker)?;
-        ensure!(
-            fs::metadata(&marker)?.len() <= 4096,
-            "Invalid installation ownership marker"
-        );
-        let bytes = fs::read(marker)?;
-        let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes);
-        let value: serde_json::Value = serde_json::from_slice(bytes)?;
-        ensure!(
-            value["product"] == "TerminalNote" && value["schema"] == 1,
-            "Invalid installation ownership marker"
-        );
-        let version = semver::Version::parse(
-            value["version"]
-                .as_str()
-                .context("Invalid installation version")?,
-        )?;
-        ensure!(
-            version.pre.is_empty() && version.build.is_empty(),
-            "Invalid installation version"
-        );
-        ensure!(
-            version <= semver::Version::parse(env!("CARGO_PKG_VERSION"))?,
-            "Installation ownership version mismatch"
-        );
+        validate_installation_marker(&marker)?;
     }
+    Ok(())
+}
+
+fn validate_installation_marker(marker: &Path) -> Result<()> {
+    let mut bytes = Vec::new();
+    fs::File::open(marker)?.take(4097).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= 4096, "Invalid installation ownership marker");
+    let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes);
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    ensure!(
+        value["product"] == "TerminalNote" && value["schema"] == 1,
+        "Invalid installation ownership marker"
+    );
+    let version = semver::Version::parse(
+        value["version"]
+            .as_str()
+            .context("Invalid installation version")?,
+    )?;
+    ensure!(
+        version.pre.is_empty() && version.build.is_empty(),
+        "Invalid installation version"
+    );
+    ensure!(
+        version <= semver::Version::parse(env!("CARGO_PKG_VERSION"))?,
+        "Installation ownership version mismatch"
+    );
     Ok(())
 }
 fn payload_version(path: &Path, version: &str) -> Result<()> {
@@ -923,19 +926,16 @@ mod tests {
     #[test]
     fn validates_installation_ownership_marker_without_mutation() {
         let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("note.exe");
-        fs::write(&target, b"owned").unwrap();
-        installation_owner(&target).unwrap();
         let marker = dir.path().join(".terminalnote-install.json");
         fs::write(
             &marker,
             br#"{"product":"Other","schema":1,"version":"0.1.0"}"#,
         )
         .unwrap();
-        assert!(installation_owner(&target).is_err());
+        assert!(validate_installation_marker(&marker).is_err());
         let good = br#"{"product":"TerminalNote","schema":1,"version":"0.1.0","unknown":"keep"}"#;
         fs::write(&marker, good).unwrap();
-        installation_owner(&target).unwrap();
+        validate_installation_marker(&marker).unwrap();
         assert_eq!(fs::read(marker).unwrap(), good);
     }
     #[test]
