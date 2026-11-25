@@ -33,9 +33,6 @@ pub struct Prepared {
     payload_hash: String,
 }
 impl Prepared {
-    pub fn version(&self) -> &str {
-        &self.version
-    }
     #[cfg(test)]
     pub fn fixture() -> Self {
         Self {
@@ -92,7 +89,7 @@ fn download(version: &str, filename: &str, limit: u64) -> Result<Vec<u8>> {
     let f = filename.to_owned();
     let client = reqwest::blocking::Client::builder()
         .https_only(true)
-        .connect_timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(12))
         .timeout(Duration::from_secs(90))
         .user_agent(concat!("TerminalNote/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
@@ -110,10 +107,27 @@ fn download(version: &str, filename: &str, limit: u64) -> Result<Vec<u8>> {
         url_allowed(&url, version, filename, false),
         "Invalid asset URL"
     );
-    let response = client
-        .get(url)
-        .send()
-        .context("Cannot download official update")?;
+    let mut attempt = 0;
+    let response = loop {
+        match client
+            .get(url.clone())
+            .send()
+            .and_then(|r| r.error_for_status())
+        {
+            Err(error)
+                if attempt < 2
+                    && (error.is_connect()
+                        || error.is_timeout()
+                        || error
+                            .status()
+                            .is_some_and(|s| matches!(s.as_u16(), 502..=504))) =>
+            {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(300 * attempt));
+            }
+            result => break result?,
+        }
+    };
     ensure!(
         response.status() == reqwest::StatusCode::OK,
         "Official update asset unavailable"
@@ -374,12 +388,37 @@ fn prepare(version: &str, sender: &Sender<Event>) -> Result<Prepared> {
     let _ = sender.send(Event::Progress(
         "Downloading checksums / Скачивание контрольных сумм",
     ));
-    let sums = download(version, "SHA256SUMS.txt", 64 * 1024)?;
+    let sums = download(version, "SHA256SUMS.txt", 64 * 1024)
+        .map_err(|error| download_error("SHA256SUMS.txt", &error))?;
     let _ = sender.send(Event::Progress("Downloading archive / Скачивание архива"));
-    let bytes = download(version, &asset(version), MAX_ARCHIVE)?;
+    let bytes = download(version, &asset(version), MAX_ARCHIVE)
+        .map_err(|error| download_error("ZIP", &error))?;
     let _ = sender.send(Event::Progress("Verifying archive / Проверка архива"));
-    verify_checksum(&bytes, &sums, &asset(version))?;
-    let exe = validate_archive(&bytes)?;
+    verify_checksum(&bytes, &sums, &asset(version))
+        .map_err(|_| anyhow::anyhow!("SHA-256 mismatch / Ошибка SHA-256"))?;
+    let exe = validate_archive(&bytes)
+        .map_err(|_| anyhow::anyhow!("Invalid update ZIP / Недопустимый ZIP обновления"))?;
+    stage_payload(version, &exe).map_err(|_| {
+        anyhow::anyhow!("Cannot stage update in LocalAppData / Не удалось подготовить обновление в LocalAppData")
+    })
+}
+
+fn download_error(asset: &str, error: &anyhow::Error) -> anyhow::Error {
+    // Never expose a signed CDN URL, proxy credentials, or a local path.
+    let cause = error.downcast_ref::<reqwest::Error>();
+    let detail = match cause {
+        Some(error) if error.is_timeout() => "timeout / тайм-аут",
+        Some(error) if error.is_redirect() => "redirect rejected / перенаправление отклонено",
+        Some(error) if error.is_connect() => "connection or TLS / соединение или TLS",
+        Some(error) if error.is_status() => {
+            return anyhow::anyhow!("{asset}: HTTP {}", error.status().unwrap());
+        }
+        _ => "transfer failed / ошибка передачи",
+    };
+    anyhow::anyhow!("{asset}: {detail}")
+}
+
+fn stage_payload(version: &str, exe: &[u8]) -> Result<Prepared> {
     let root = dirs::data_local_dir().context("Local application data is unavailable")?;
     owned(&root)?;
     let stage = tempfile::Builder::new()
@@ -391,12 +430,12 @@ fn prepare(version: &str, sender: &Sender<Event>) -> Result<Prepared> {
         .write(true)
         .create_new(true)
         .open(&payload)?
-        .write_all(&exe)?;
+        .write_all(exe)?;
     // Version probing executes the verified unsigned package only after final consent.
     Ok(Prepared {
         stage,
         version: version.into(),
-        payload_hash: digest(&exe),
+        payload_hash: digest(exe),
     })
 }
 pub fn start_download(version: String) -> Result<Receiver<Event>> {
@@ -404,9 +443,7 @@ pub fn start_download(version: String) -> Result<Receiver<Event>> {
     std::thread::Builder::new()
         .name("terminalnote-update-download".into())
         .spawn(move || {
-            let result = prepare(&version, &tx).map_err(|_| {
-                "Update download/verification failed / Ошибка скачивания или проверки".into()
-            });
+            let result = prepare(&version, &tx).map_err(|error| error.to_string());
             let _ = tx.send(Event::Done(result));
         })?;
     Ok(rx)
@@ -714,6 +751,25 @@ pub fn helper_entry() -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "manual network smoke test; uses official assets and never installs"]
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    fn published_windows_update_can_be_staged() {
+        let version = std::env::var("TERMINALNOTE_SMOKE_VERSION").unwrap();
+        assert_eq!(
+            semver::Version::parse(&version).unwrap().to_string(),
+            version
+        );
+        let filename = super::asset(&version);
+        let sums = super::download(&version, "SHA256SUMS.txt", 64 * 1024)
+            .map_err(|e| super::download_error("SHA256SUMS.txt", &e))
+            .unwrap();
+        let zip = super::download(&version, &filename, super::MAX_ARCHIVE)
+            .map_err(|e| super::download_error("ZIP", &e))
+            .unwrap();
+        super::verify_checksum(&zip, &sums, &filename).unwrap();
+        super::stage_payload(&version, &super::validate_archive(&zip).unwrap()).unwrap();
+    }
     use super::*;
     #[cfg(windows)]
     #[test]

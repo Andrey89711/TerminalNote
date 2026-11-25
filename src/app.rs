@@ -76,7 +76,6 @@ enum OverlayKind {
     UpdateConsent,
     UpdateResult,
     DownloadConsent,
-    InstallConsent,
 }
 
 // Dialog lifetime and rendered hit targets never belong to the underlying editor.
@@ -532,6 +531,7 @@ impl App {
             self.install_pending = false;
             let result = self
                 .prepared_update
+                .take()
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("No verified update"))
                 .and_then(crate::update_install::launch);
@@ -876,16 +876,18 @@ impl App {
             crate::update_install::Event::Done(result) => {
                 self.download_rx = None;
                 match result {
-                    Ok(prepared) => {
+                    Ok(prepared)
+                        if self
+                            .overlay
+                            .as_ref()
+                            .is_some_and(|o| o.kind == OverlayKind::DownloadConsent) =>
+                    {
+                        self.close_overlay();
                         self.prepared_update = Some(prepared);
-                        self.message(
-                            self.tr(
-                                "Verified update ready. Open update result in Ctrl+P.",
-                                "Обновление проверено. Откройте результат обновления в Ctrl+P.",
-                            ),
-                            false,
-                        );
+                        self.install_pending = true;
+                        self.leave_editor(true);
                     }
+                    Ok(_) => {}
                     Err(error) => self.message(error, true),
                 }
             }
@@ -924,6 +926,14 @@ impl App {
                     false,
                 );
                 self.update_result = Some(status);
+                if cfg!(all(windows, target_arch = "x86_64"))
+                    && matches!(self.update_result, Some(UpdateStatus::Available(_)))
+                    && self.overlay.is_none()
+                    && self.palette.is_none()
+                    && self.mode == Mode::Browse
+                {
+                    self.open_overlay(OverlayKind::DownloadConsent);
+                }
             }
             Err(error) => self.message(
                 format!(
@@ -990,9 +1000,7 @@ impl App {
                         self.close_overlay();
                     } else if key.code == KeyCode::Enter && overlay.visible {
                         self.close_overlay();
-                        if self.prepared_update.is_some() {
-                            self.open_overlay(OverlayKind::InstallConsent);
-                        } else if matches!(self.update_result, Some(UpdateStatus::Available(_))) {
+                        if matches!(self.update_result, Some(UpdateStatus::Available(_))) {
                             if cfg!(all(windows, target_arch = "x86_64")) {
                                 self.open_overlay(OverlayKind::DownloadConsent);
                             } else {
@@ -1003,38 +1011,26 @@ impl App {
                 }
                 OverlayKind::DownloadConsent => {
                     if key.code == KeyCode::Esc {
+                        self.download_rx = None;
                         self.close_overlay();
-                    } else if key.code == KeyCode::Enter && overlay.visible {
-                        self.close_overlay();
-                        if self.update_rx.is_none() && self.download_rx.is_none() {
-                            if let Some(UpdateStatus::Available(version)) = &self.update_result {
-                                match (self.download_worker)(version.clone()) {
-                                    Ok(rx) => {
-                                        self.download_rx = Some(rx);
-                                        self.message(
-                                            self.tr(
-                                                "Downloading update…",
-                                                "Скачивание обновления…",
-                                            ),
-                                            false,
-                                        );
-                                    }
-                                    Err(e) => self.message(e.to_string(), true),
+                    } else if key.kind == KeyEventKind::Press
+                        && key.code == KeyCode::Enter
+                        && overlay.visible
+                        && self.update_rx.is_none()
+                        && self.download_rx.is_none()
+                    {
+                        if let Some(UpdateStatus::Available(version)) = &self.update_result {
+                            match (self.download_worker)(version.clone()) {
+                                Ok(rx) => {
+                                    self.download_rx = Some(rx);
+                                    self.message(
+                                        self.tr("Downloading update…", "Скачивание обновления…"),
+                                        false,
+                                    );
                                 }
+                                Err(e) => self.message(e.to_string(), true),
                             }
                         }
-                    }
-                }
-                OverlayKind::InstallConsent => {
-                    if key.code == KeyCode::Esc {
-                        self.close_overlay();
-                    } else if key.code == KeyCode::Enter
-                        && overlay.visible
-                        && self.prepared_update.is_some()
-                    {
-                        self.close_overlay();
-                        self.install_pending = true;
-                        self.leave_editor(true);
                     }
                 }
                 OverlayKind::Language => match key.code {
@@ -1083,6 +1079,9 @@ impl App {
                     self.finish_edit(quit);
                 }
                 KeyCode::Esc | KeyCode::Char('c' | 'C') => {
+                    if self.install_pending {
+                        self.prepared_update = None;
+                    }
                     self.install_pending = false;
                     self.mode = Mode::Edit;
                 }
@@ -1815,11 +1814,7 @@ impl App {
             }
             Some(OverlayKind::UpdateResult) => {
                 let text = self.update_result.as_ref().map(|status| status.description(self.language)).unwrap_or_else(|| self.tr("No update result yet.", "Результат проверки отсутствует.").into());
-                let action = if self.prepared_update.is_some() {
-                    self.tr("Enter — review installation consent; Esc — back", "Enter — согласие на установку; Esc — назад")
-                } else {
-                    self.tr("Enter — review download consent; Esc — back", "Enter — согласие на скачивание; Esc — назад")
-                };
+                let action = self.tr("Enter — review update consent; Esc — back", "Enter — согласие на обновление; Esc — назад");
                 let text = format!("{text}\n\n{action}");
                 let height = Paragraph::new(text.as_str()).wrap(Wrap { trim: false }).line_count(area.width.min(82).saturating_sub(2)) + 2;
                 if height <= usize::from(area.height.saturating_sub(2)) {
@@ -1829,18 +1824,17 @@ impl App {
                     popup(frame, self.tr("Resize to see the full result. Esc cancels.", "Увеличьте окно для полного текста. Esc — отмена."), " Updates ", 6);
                 }
             }
-            Some(kind @ (OverlayKind::DownloadConsent | OverlayKind::InstallConsent)) => {
-                let text = if kind == OverlayKind::DownloadConsent {
-                    self.tr("Download the official Windows archive and SHA256SUMS.txt?\n\nGitHub and release-assets.githubusercontent.com receive your IP and app/version.\nNo notes, paths, or settings are sent.\nDownloads: at most 64 MiB, 90 seconds per request.\nSHA256 detects corruption, NOT authenticity: packages are UNSIGNED.\nNo code runs and no installation starts during download.\n\nEnter — download and verify; Esc — cancel", "Скачать официальный архив Windows и SHA256SUMS.txt?\n\nGitHub и release-assets.githubusercontent.com получат ваш IP и приложение/версию.\nЗаметки, пути и настройки не передаются.\nЛимит: 64 МиБ, 90 секунд на запрос.\nSHA256 выявляет повреждения, НЕ подлинность: пакеты НЕ ПОДПИСАНЫ.\nПри скачивании код не запускается, установка не начинается.\n\nEnter — скачать и проверить; Esc — отмена")
-                } else {
-                    self.tr("Install the verified UNSIGNED update and restart?\n\nThis executes the downloaded program to verify its version.\nOnly this running note.exe is replaced, without administrator rights.\nNotes, settings, language, PATH and other files stay unchanged.\nA local copy of this app waits for exit, retries locked files for 30s,\nand retains the original if replacement fails.\nUnsaved edits next require save/discard; cancel keeps your draft.\n\nEnter — install and restart; Esc — cancel", "Установить проверенное НЕПОДПИСАННОЕ обновление и перезапустить?\n\nСкачанная программа будет запущена для проверки версии.\nЗаменяется только текущий note.exe, без прав администратора.\nЗаметки, настройки, язык, PATH и прочие файлы не изменяются.\nЛокальная копия приложения ждёт выхода, повторяет замену 30 с\nи сохраняет оригинал при ошибке замены.\nДля правок потребуется сохранить/отбросить; отмена сохраняет черновик.\n\nEnter — установить и перезапустить; Esc — отмена")
+            Some(OverlayKind::DownloadConsent) => {
+                let version = match &self.update_result {
+                    Some(UpdateStatus::Available(version)) => version.as_str(),
+                    _ => "?",
                 };
-                let text = if kind == OverlayKind::InstallConsent {
-                    format!("{} {}\n{}\n\n{text}",
-                        self.tr("New version:", "Новая версия:"),
-                        self.prepared_update.as_ref().map(|p| p.version()).unwrap_or("?"),
-                        crate::safe(&std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()))
-                } else { text.to_string() };
+                let body = if self.download_rx.is_some() {
+                    self.tr("Downloading and verifying…\nEsc — cancel installation", "Скачивание и проверка…\nEsc — отменить установку")
+                } else {
+                    self.tr("Download from GitHub, verify SHA-256, replace note.exe and restart?\n\nThe package is unsigned; checksums are not publisher signatures.\nGitHub receives your IP and app version, not notes or settings.\nOnly note.exe changes; unsaved edits require save or discard.\n\nEnter — download, install and restart; Esc — cancel", "Скачать с GitHub, проверить SHA-256, заменить note.exe и перезапустить?\n\nПакет не подписан; контрольные суммы не заменяют подпись.\nGitHub получит IP и версию приложения, но не заметки или настройки.\nМеняется только note.exe; правки нужно сохранить или отбросить.\n\nEnter — скачать, установить и перезапустить; Esc — отмена")
+                };
+                let text = format!("{} {version}\n\n{body}", self.tr("New version:", "Новая версия:"));
                 let height = Paragraph::new(text.as_str()).wrap(Wrap { trim: false }).line_count(area.width.min(82).saturating_sub(2)) + 2;
                 if height <= usize::from(area.height.saturating_sub(2)) {
                     popup(frame, &text, self.tr(" Update consent ", " Согласие на обновление "), height as u16);
@@ -2193,7 +2187,7 @@ mod tests {
         .ok()
         .unwrap();
         app.tick(Instant::now());
-        assert!(app.prepared_update.is_some());
+        assert!(app.prepared_update.is_none());
         assert!(app.download_rx.is_none());
         assert_eq!(app.edited_text(), draft);
         assert_eq!(app.mode, Mode::Edit);
@@ -2207,7 +2201,8 @@ mod tests {
         let draft = app.edited_text();
         app.prepared_update = Some(crate::update_install::Prepared::fixture());
         app.update_result = Some(UpdateStatus::Available("99.0.0".into()));
-        for kind in [OverlayKind::DownloadConsent, OverlayKind::InstallConsent] {
+        {
+            let kind = OverlayKind::DownloadConsent;
             app.open_overlay(kind);
             rendered(&mut app, 24, 6);
             app.key(key(KeyCode::Enter));
@@ -2222,9 +2217,15 @@ mod tests {
             app.key(key(KeyCode::Esc));
             assert_eq!(app.edited_text(), draft);
         }
-        app.open_overlay(OverlayKind::InstallConsent);
+        app.open_overlay(OverlayKind::DownloadConsent);
         rendered(&mut app, 120, 45);
-        app.key(key(KeyCode::Enter));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.download_rx = Some(rx);
+        tx.send(crate::update_install::Event::Done(Ok(
+            crate::update_install::Prepared::fixture(),
+        )))
+        .unwrap();
+        assert!(app.poll_download());
         assert_eq!(app.mode, Mode::Confirm { quit: true });
         assert!(app.install_pending);
         rendered(&mut app, 24, 6);

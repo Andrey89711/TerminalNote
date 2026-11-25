@@ -37,8 +37,8 @@ impl UpdateStatus {
                 language.text("Installed:", "Установлена:"),
                 language.text("Release page:", "Страница релиза:"),
                 language.text(
-                    "Download and installation each require separate consent. Packages are unsigned.",
-                    "Скачивание и установка требуют отдельных согласий. Пакеты не подписаны."
+                    "On Windows x64, one approval covers download, install and restart. Packages are unsigned.",
+                    "На Windows x64 одно согласие разрешает скачивание, установку и перезапуск. Пакеты не подписаны."
                 )
             ),
             Self::NoRelease => language

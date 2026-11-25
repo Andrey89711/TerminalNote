@@ -61,8 +61,8 @@ Specify `.txt` explicitly for a plain-text note.
 
 ## Windows installer
 
-1. Download `terminalnote-v0.1.3-windows-x86_64.zip` and `SHA256SUMS.txt` from
-   [the release page](https://github.com/Andrey89711/TerminalNote/releases/tag/v0.1.3).
+1. Download `terminalnote-v0.1.4-windows-x86_64.zip` and `SHA256SUMS.txt` from
+   [the release page](https://github.com/Andrey89711/TerminalNote/releases/tag/v0.1.4).
 2. Compare the ZIP's `Get-FileHash -Algorithm SHA256` result with the published checksum.
 3. Extract the whole archive, then double-click **`setup.cmd`**. Do not run it from
    inside the ZIP. Rust and administrator permissions are not required.
@@ -270,22 +270,24 @@ before it starts; Esc cancels. GitHub receives your IP address and a
 configuration are sent. The request uses HTTPS with redirects disabled, a 64 KiB
 response limit and a 10-second timeout.
 
-There are no startup or scheduled checks. The background result never interrupts
-an editor draft. Open **Update check result** through Ctrl+P, then Enter to review
-the separate **download consent**. On Windows x86_64 this downloads only a newer
+There are no startup or scheduled checks. On Windows x86_64 the update prompt
+opens when the result arrives in Browse; it never interrupts an editor draft.
+You can also reopen it via **Ctrl+P → Update check result**. Approve once to
+download, verify, install and restart. The app downloads only a newer
 stable `terminalnote-vX.Y.Z-windows-x86_64.zip` and `SHA256SUMS.txt` from
 `Andrey89711/TerminalNote`. GitHub and its `release-assets.githubusercontent.com`
 download service receive your IP and app/version, never notes or settings.
 Every HTTPS redirect is checked; archive downloads are bounded to 64 MiB and
-90 seconds per request. SHA256, the exact package file list, regular-file types,
+90 seconds per attempt, with up to two retries for temporary connection or
+server failures. SHA256, the exact package file list, regular-file types,
 CRC, expanded sizes and compression ratios are checked before staging.
 
 **Packages are unsigned. Checksums from the same GitHub release detect corruption,
 not publisher authenticity or a compromised release account.**
 
-After verification, open the result again and review the separate **install and
-restart consent**. Small windows cannot accept a truncated confirmation.
-Unsaved notes still require Save/Discard; Cancel keeps the draft.
+Small windows cannot accept a truncated confirmation. Press Esc during download
+to cancel installation. Unsaved notes still require Save/Discard; Cancel keeps
+the draft.
 Only after consent does the app run the staged executable's version probe and
 launch a local copy of the current executable as its native Windows helper.
 No PowerShell or downloaded installer script executes.

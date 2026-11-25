@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4
+
+- On Windows x64, one approval downloads, verifies, installs and restarts.
+  Unsaved notes still require Save or Discard before restart.
+- Retry transient asset download failures and identify the failing download
+  or verification stage without exposing local paths or signed URLs.
+
 ## 0.1.3
 
 - Ctrl+F searches names, paths and note text without matching case. Press Enter
