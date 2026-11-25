@@ -63,6 +63,7 @@ enum Mode {
     Browse,
     Edit,
     Search,
+    ContentSearch,
     New,
     Links,
     Confirm { quit: bool },
@@ -113,6 +114,8 @@ struct App {
     preview_focus: bool,
     scroll: u16,
     query: String,
+    content_matches: Option<HashSet<PathBuf>>,
+    search_job: Option<crate::search::Search>,
     input: String,
     status: String,
     error: bool,
@@ -157,6 +160,8 @@ impl App {
             preview_focus: false,
             scroll: 0,
             query: String::new(),
+            content_matches: None,
+            search_job: None,
             input: String::new(),
             status: "Welcome — n: new note · /: filter · ?: help".into(),
             error: false,
@@ -266,12 +271,18 @@ impl App {
 
     fn filter(&mut self, preferred: Option<PathBuf>) {
         let preferred_tree = preferred.clone();
+        if self.query.is_empty() {
+            self.content_matches = None;
+        }
         let query = self.query.to_lowercase();
         self.visible = self
             .notes
             .iter()
             .enumerate()
-            .filter(|(_, entry)| entry.path.to_string_lossy().to_lowercase().contains(&query))
+            .filter(|(_, entry)| match &self.content_matches {
+                Some(matches) => matches.contains(&entry.path),
+                None => entry.path.to_string_lossy().to_lowercase().contains(&query),
+            })
             .map(|(i, _)| i)
             .collect();
         self.selected = preferred
@@ -722,6 +733,9 @@ impl App {
             Command::SearchNotes => {
                 self.input.clone_from(&self.query);
                 self.mode = Mode::Search;
+                if self.content_matches.is_some() {
+                    self.update_search();
+                }
             }
             Command::OpenLinks => self.open_links(),
             Command::Back => {
@@ -923,7 +937,7 @@ impl App {
         true
     }
     fn tick(&mut self, now: Instant) -> bool {
-        let changed = self.poll_update() | self.poll_download();
+        let changed = self.poll_update() | self.poll_download() | self.poll_content_search();
         if self.notice_until.is_some_and(|until| now >= until) {
             self.notice_until = None;
             self.status.clear();
@@ -1038,6 +1052,13 @@ impl App {
             }
             return;
         }
+        if ctrl && matches!(key.code, KeyCode::Char('f' | 'F' | 'а' | 'А')) {
+            if self.mode == Mode::Browse || self.mode == Mode::Search {
+                self.input.clone_from(&self.query);
+                self.mode = Mode::ContentSearch;
+            }
+            return;
+        }
         match self.mode {
             Mode::Edit => {
                 if key.code == KeyCode::Esc {
@@ -1067,8 +1088,9 @@ impl App {
                 }
                 _ => {}
             },
-            Mode::Search | Mode::New => match key.code {
+            Mode::Search | Mode::ContentSearch | Mode::New => match key.code {
                 KeyCode::Esc => {
+                    self.search_job = None;
                     if self.mode == Mode::Search {
                         self.query.clear();
                         self.filter(None);
@@ -1078,6 +1100,8 @@ impl App {
                 KeyCode::Enter => {
                     if self.mode == Mode::New {
                         self.create();
+                    } else if self.mode == Mode::ContentSearch {
+                        self.start_content_search();
                     } else {
                         self.mode = Mode::Browse;
                     }
@@ -1163,9 +1187,69 @@ impl App {
 
     fn update_search(&mut self) {
         if self.mode == Mode::Search {
+            self.content_matches = None;
             self.query.clone_from(&self.input);
             self.filter(None);
+        } else if self.mode == Mode::ContentSearch {
+            self.search_job = None;
         }
+    }
+
+    fn start_content_search(&mut self) {
+        if self.search_job.is_some() {
+            return;
+        }
+        if self.input.is_empty() {
+            self.query.clear();
+            self.mode = Mode::Browse;
+            self.filter(None);
+            return;
+        }
+        match crate::search::Search::start(self.store.clone(), self.notes.clone(), &self.input) {
+            Ok(job) => self.search_job = Some(job),
+            Err(_) => self.message(
+                self.tr("Cannot start search.", "Не удалось запустить поиск."),
+                true,
+            ),
+        }
+    }
+
+    fn poll_content_search(&mut self) -> bool {
+        let Some(job) = &self.search_job else {
+            return false;
+        };
+        let result = job.results.try_recv();
+        if matches!(result, Err(TryRecvError::Empty)) {
+            return false;
+        }
+        self.search_job = None;
+        if self.mode != Mode::ContentSearch {
+            return false;
+        }
+        match result {
+            Ok(result) => {
+                let preferred = self.selected_path();
+                self.query.clone_from(&self.input);
+                self.content_matches = Some(result.paths);
+                self.mode = Mode::Browse;
+                self.filter(preferred);
+                if result.skipped != 0 {
+                    self.message(
+                        format!(
+                            "{}: {}",
+                            self.tr(
+                                "Notes skipped (unreadable or too large)",
+                                "Пропущено недоступных или слишком больших заметок"
+                            ),
+                            result.skipped
+                        ),
+                        true,
+                    );
+                }
+            }
+            Err(_) => self.message(self.tr("Search interrupted.", "Поиск прерван."), true),
+        }
+        true
     }
 
     fn paste(&mut self, text: String) {
@@ -1176,7 +1260,7 @@ impl App {
             palette.paste(&text);
             return;
         }
-        if matches!(self.mode, Mode::Search | Mode::New) {
+        if matches!(self.mode, Mode::Search | Mode::ContentSearch | Mode::New) {
             if !editable(&text)
                 || text.contains(['\n', '\r', '\t'])
                 || self.input.len().saturating_add(text.len()) > 1024
@@ -1711,7 +1795,10 @@ impl App {
         } else if self.editor.is_some() {
             self.tr(" Ctrl+P commands · Ctrl+S save · Esc back · Ctrl+Z undo · Ctrl+Y redo · Ctrl+Q quit ", " Ctrl+P команды · Ctrl+S сохранить · Esc назад · Ctrl+Z отменить · Ctrl+Y повторить · Ctrl+Q выход ")
         } else {
-            self.tr(" Ctrl+P commands · ↑↓ select · ←→ folders · Enter open/edit · n new · / search · Tab preview ", " Ctrl+P команды · ↑↓ выбор · ←→ папки · Enter открыть · n новая · / поиск · Tab просмотр ")
+            self.tr(
+                " Ctrl+F search text · Ctrl+P commands · ↑↓ select · ←→ folders · Enter open/edit ",
+                " Ctrl+F поиск по тексту · Ctrl+P команды · ↑↓ выбор · ←→ папки · Enter открыть ",
+            )
         };
         frame.render_widget(Paragraph::new(help).style(theme::dim()), parts[2]);
         self.draw_notice(frame);
@@ -1776,10 +1863,26 @@ impl App {
                 frame.render_widget(Paragraph::new(hint).style(theme::surface().fg(if self.error { theme::ERROR } else { theme::MUTED })).wrap(Wrap { trim: false }), rows[1]);
                 self.overlay.as_mut().unwrap().visible = true;
             }
-            Some(OverlayKind::Help) => popup(frame, self.tr("Ctrl+P  Search commands (English / Russian)\n\n↑↓ select folder / note · ←→ collapse / expand\nEnter edit / open · n new note · / filter paths\nTab preview focus · PgUp/PgDn scroll · l internal links\nAlt+← history · r refresh · Ctrl+Q quit\n\nEditor: Ctrl+S save · Esc return · Ctrl+Z/Y undo/redo\nUnsaved changes always require save/discard confirmation.\nNotes are local plain-text files, not encrypted.\n\nEnter / Esc — back", "Ctrl+P  Поиск команд (английский / русский)\n\n↑↓ выбор папки / заметки · ←→ свернуть / раскрыть\nEnter открыть · n новая заметка · / поиск по пути\nTab фокус просмотра · PgUp/PgDn прокрутка · l ссылки\nAlt+← история · r перечитать · Ctrl+Q выход\n\nРедактор: Ctrl+S сохранить · Esc назад · Ctrl+Z/Y отмена/повтор\nНесохранённые правки требуют подтверждения выхода.\nЗаметки — незашифрованные локальные текстовые файлы.\n\nEnter / Esc — назад"), self.tr(" Help ", " Справка "), 16),
+            Some(OverlayKind::Help) => popup(frame, self.tr("Ctrl+P  Search commands (English / Russian)\nCtrl+F  Search names, paths and note text\n\n↑↓ select folder / note · ←→ collapse / expand\nEnter edit / open · n new note · / filter paths\nTab preview focus · PgUp/PgDn scroll · l internal links\nAlt+← history · r refresh · Ctrl+Q quit\n\nEditor: Ctrl+S save · Esc return · Ctrl+Z/Y undo/redo\nUnsaved changes always require save/discard confirmation.\nNotes are local plain-text files, not encrypted.\n\nEnter / Esc — back", "Ctrl+P  Поиск команд (английский / русский)\nCtrl+F  Поиск по имени, пути и тексту заметок\n\n↑↓ выбор папки / заметки · ←→ свернуть / раскрыть\nEnter открыть · n новая заметка · / поиск по пути\nTab фокус просмотра · PgUp/PgDn прокрутка · l ссылки\nAlt+← история · r перечитать · Ctrl+Q выход\n\nРедактор: Ctrl+S сохранить · Esc назад · Ctrl+Z/Y отмена/повтор\nНесохранённые правки требуют подтверждения выхода.\nЗаметки — незашифрованные локальные текстовые файлы.\n\nEnter / Esc — назад"), self.tr(" Help ", " Справка "), 17),
             None => {}
         }
         match self.mode {
+            Mode::ContentSearch => {
+                let hint = if self.search_job.is_some() {
+                    self.tr("Searching… Esc cancels", "Поиск… Esc — отмена")
+                } else {
+                    self.tr(
+                        "Enter searches · Esc cancels",
+                        "Enter — искать · Esc — отмена",
+                    )
+                };
+                popup(
+                    frame,
+                    &format!("{}▏\n{hint}", crate::safe(&self.input)),
+                    self.tr(" Search names and note text ", " Поиск по имени и тексту "),
+                    5,
+                );
+            }
             Mode::Search | Mode::New => {
                 let title = if self.mode == Mode::Search {
                     self.tr(
@@ -2135,6 +2238,58 @@ mod tests {
     }
     pub(super) fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+    #[test]
+    fn ctrl_f_finds_note_text_and_paths_but_slash_still_filters_only_paths() {
+        let (root, mut app) = app();
+        std::fs::write(root.path().join("First.md"), "x\nСовПадение").unwrap();
+        std::fs::write(root.path().join("совпадение.txt"), "different text").unwrap();
+        std::fs::write(root.path().join("invalid.txt"), [0xff]).unwrap();
+        app.refresh(None).unwrap();
+        app.key(KeyEvent::new(KeyCode::Char('а'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, Mode::ContentSearch);
+        app.paste("СОВПАДЕНИЕ".into());
+        assert!(app.search_job.is_none());
+        app.key(key(KeyCode::Enter));
+        // Receive via the production poll path, without relying on a fixed sleep.
+        let until = Instant::now() + Duration::from_secs(5);
+        while !app.poll_content_search() {
+            assert!(Instant::now() < until, "content search did not finish");
+            std::thread::yield_now();
+        }
+        assert_eq!(app.mode, Mode::Browse);
+        assert_eq!(app.visible.len(), 2);
+        assert!(app
+            .visible
+            .iter()
+            .any(|i| app.notes[*i].path == Path::new("First.md")));
+        assert!(app.status.contains("Notes skipped"));
+        app.key(key(KeyCode::Char('/')));
+        assert_eq!(app.mode, Mode::Search);
+        assert_eq!(app.visible.len(), 1);
+        assert_eq!(app.notes[app.visible[0]].path, Path::new("совпадение.txt"));
+    }
+
+    #[test]
+    fn ctrl_f_cancel_preserves_applied_filter_and_does_not_interrupt_edits() {
+        let (_root, mut app) = app();
+        app.key(key(KeyCode::Char('/')));
+        app.paste("First".into());
+        app.key(key(KeyCode::Enter));
+        let shortcut = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+        app.key(shortcut);
+        app.key(key(KeyCode::Enter));
+        assert!(app.search_job.is_some());
+        app.key(key(KeyCode::Esc));
+        assert!(app.search_job.is_none());
+        assert!(!app.poll_content_search());
+        assert_eq!(app.query, "First");
+        app.start_edit();
+        app.paste("draft".into());
+        let draft = app.edited_text();
+        app.key(shortcut);
+        assert_eq!(app.mode, Mode::Edit);
+        assert_eq!(app.edited_text(), draft);
     }
     pub(super) fn app() -> (tempfile::TempDir, App) {
         let root = tempdir().unwrap();

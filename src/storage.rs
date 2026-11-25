@@ -30,7 +30,7 @@ pub struct Listing {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NoteStore {
     root: PathBuf,
 }

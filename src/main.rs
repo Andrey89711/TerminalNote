@@ -5,6 +5,7 @@ mod explorer;
 mod i18n;
 mod links;
 mod markdown;
+mod search;
 mod storage;
 mod theme;
 mod update_install;

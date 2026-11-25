@@ -285,6 +285,22 @@ fn real_terminal_preview_links_utf8_edit_save_and_quit() {
 }
 
 #[test]
+fn real_terminal_ctrl_f_finds_a_match_only_in_the_note_body() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("First.md"), "INITIAL_PREVIEW\n").unwrap();
+    let target = root.path().join("Second.md");
+    let original = "SECOND_PREVIEW\n\nUniqueBodyToken\n";
+    fs::write(&target, original).unwrap();
+    let mut terminal = TerminalSession::spawn(root.path());
+    terminal.expect_since(0, "INITIAL_PREVIEW");
+    terminal.action(b"\x06", "Search names and note text");
+    terminal.send(b"\x1b[200~uniquebodytoken\x1b[201~");
+    terminal.action(b"\r", "SECOND_PREVIEW");
+    terminal.quit();
+    assert_eq!(fs::read_to_string(target).unwrap(), original);
+}
+
+#[test]
 fn real_terminal_external_conflict_retains_edits_and_confirms_discard() {
     let root = tempdir().unwrap();
     let path = root.path().join("First.md");

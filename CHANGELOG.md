@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+- Ctrl+F searches names, paths and note text without matching case. Press Enter
+  to search in the background or Esc to cancel and keep the previous filter.
+- `/` remains a path-only filter; the search shortcut does not interrupt editing.
+
 ## 0.1.2
 
 - Explicit Windows in-app update downloads with SHA-256 and archive validation,
