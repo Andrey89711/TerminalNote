@@ -17,6 +17,14 @@ pub const MAX_NOTE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DEPTH: usize = 16;
 const MAX_ENTRIES: usize = 10_000;
 const BOM: &[u8] = b"\xef\xbb\xbf";
+pub const TRASH: &str = ".terminalnote-trash";
+
+#[derive(Default)]
+pub struct BatchReport {
+    pub completed: usize,
+    pub failed: usize,
+    pub first_error: Option<anyhow::Error>,
+}
 
 #[derive(Debug, Clone)]
 pub struct NoteEntry {
@@ -62,7 +70,7 @@ impl NoteStore {
     }
 
     /// Lists md/txt files, including dotted filenames and ordinary dotted dirs.
-    /// Only .git, .hg, .svn, target and node_modules directories are excluded
+    /// .git, .hg, .svn, target, node_modules and the recovery folder are excluded
     /// (case-insensitively). Up to 16 directory levels and 10,000 total entries
     /// are enumerated globally, including directories, ignored files, links,
     /// excluded directories and enumeration errors. The budget is applied before
@@ -182,7 +190,7 @@ impl NoteStore {
             .components()
             .any(|part| excluded_directory(part.as_os_str()))
         {
-            bail!("Cannot create note inside a directory excluded from listing (.git, .hg, .svn, target, node_modules)");
+            bail!("Cannot create note inside a directory excluded from listing");
         }
         let path = self.resolve(relative, true)?;
         let temporary = NamedTempFile::new_in(path.parent().context("Missing parent")?)
@@ -202,6 +210,104 @@ impl NoteStore {
             bom: false,
             crlf: false,
         })
+    }
+
+    fn listable_parent(path: &Path) -> Result<()> {
+        if !path.as_os_str().is_empty() {
+            validate_relative(path)?;
+        }
+        if path.components().count() > MAX_DEPTH
+            || path
+                .components()
+                .any(|part| excluded_directory(part.as_os_str()))
+        {
+            bail!("Destination is outside the visible notes tree");
+        }
+        Ok(())
+    }
+
+    fn report_batch(paths: &[PathBuf], mut action: impl FnMut(&Path) -> Result<()>) -> BatchReport {
+        let mut report = BatchReport::default();
+        for path in paths {
+            match action(path) {
+                Ok(()) => report.completed += 1,
+                Err(error) => {
+                    report.failed += 1;
+                    if report.first_error.is_none() {
+                        report.first_error = Some(error);
+                    }
+                }
+            }
+        }
+        report
+    }
+
+    fn move_one(&self, source: &Path, dest: &Path) -> Result<()> {
+        Self::listable_parent(source.parent().context("Missing note parent")?)?;
+        let source = self.resolve(source, false)?;
+        let dest = self.resolve(dest, true)?;
+        match fs::symlink_metadata(&dest) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => bail!("Destination already exists: {}", dest.display()),
+            Err(error) => return Err(error.into()),
+        }
+        move_noclobber(&source, &dest)
+    }
+
+    pub fn move_notes(&self, paths: &[PathBuf], folder: &Path) -> Result<BatchReport> {
+        Self::listable_parent(folder)?;
+        self.check_root()?;
+        let mut path = self.root.clone();
+        for part in folder.components() {
+            path.push(part.as_os_str());
+            let metadata =
+                fs::symlink_metadata(&path).context("Destination folder does not exist")?;
+            if is_link(&metadata) || !metadata.is_dir() {
+                bail!("Destination must be a regular folder");
+            }
+        }
+        Ok(Self::report_batch(paths, |source| {
+            let name = source.file_name().context("Missing note filename")?;
+            self.move_one(source, &folder.join(name))
+        }))
+    }
+
+    pub fn trash_notes(&self, paths: &[PathBuf]) -> Result<(PathBuf, BatchReport)> {
+        self.check_root()?;
+        let root = self.root.join(TRASH);
+        match fs::create_dir(&root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        let metadata = fs::symlink_metadata(&root)?;
+        if !metadata.is_dir() || is_link(&metadata) {
+            bail!("Recovery folder is not a regular directory");
+        }
+        // Never let TempDir cleanup delete a successfully recovered file.
+        let batch = tempfile::Builder::new()
+            .prefix("batch-")
+            .tempdir_in(&root)?
+            .keep();
+        let relative = batch.strip_prefix(&self.root)?.to_owned();
+        let report = Self::report_batch(paths, |source| {
+            self.resolve(source, false)?;
+            let mut parent = batch.clone();
+            for component in source.parent().context("Missing note parent")?.components() {
+                parent.push(component.as_os_str());
+                match fs::create_dir(&parent) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error.into()),
+                }
+                let metadata = fs::symlink_metadata(&parent)?;
+                if !metadata.is_dir() || is_link(&metadata) {
+                    bail!("Invalid recovery directory");
+                }
+            }
+            self.move_one(source, &relative.join(source))
+        });
+        Ok((relative, report))
     }
 
     fn check_root(&self) -> Result<()> {
@@ -344,10 +450,36 @@ impl NoteStore {
     }
 }
 
+#[cfg(windows)]
+fn move_noclobber(source: &Path, dest: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+    let wide = |path: &Path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+    };
+    let (source, dest) = (wide(source), wide(dest));
+    // Flags 0: neither replace an existing target nor copy across volumes.
+    if unsafe { MoveFileExW(source.as_ptr(), dest.as_ptr(), 0) } == 0 {
+        return Err(std::io::Error::last_os_error()).context("Cannot move note");
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn move_noclobber(source: &Path, dest: &Path) -> Result<()> {
+    // Never fall back to an overwriting rename. If unlink fails, keep both names.
+    fs::hard_link(source, dest).context("Cannot move note without overwriting the destination")?;
+    fs::remove_file(source).context("Cannot remove original; both paths were kept")?;
+    Ok(())
+}
+
 fn excluded_directory(name: &OsStr) -> bool {
     matches!(
         name.to_string_lossy().to_ascii_lowercase().as_str(),
-        ".git" | ".hg" | ".svn" | "target" | "node_modules"
+        ".git" | ".hg" | ".svn" | "target" | "node_modules" | TRASH
     )
 }
 
@@ -590,6 +722,58 @@ mod tests {
             .is_err());
         assert_eq!(doc.text, "\n");
         assert_eq!(doc.revision, b"\xef\xbb\xbf\r\n");
+    }
+
+    #[test]
+    fn batch_move_never_clobbers_and_trash_preserves_raw_bytes_and_original_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let store = NoteStore::open(root.path()).unwrap();
+        fs::create_dir(root.path().join("a")).unwrap();
+        fs::create_dir(root.path().join("b")).unwrap();
+        fs::write(root.path().join("a/keep.md"), b"old").unwrap();
+        fs::write(root.path().join("b/keep.md"), b"destination").unwrap();
+        let raw = b"\xef\xbb\xbfline\r\n";
+        fs::write(root.path().join("a/other.txt"), raw).unwrap();
+        let from = [PathBuf::from("a/keep.md"), PathBuf::from("a/other.txt")];
+        assert!(store.move_notes(&from, Path::new("../outside")).is_err());
+        let report = store.move_notes(&from, Path::new("b")).unwrap();
+        assert_eq!((report.completed, report.failed), (1, 1));
+        assert_eq!(
+            fs::read(root.path().join("b/keep.md")).unwrap(),
+            b"destination"
+        );
+        assert_eq!(fs::read(root.path().join("a/keep.md")).unwrap(), b"old");
+        let (batch, report) = store
+            .trash_notes(&[PathBuf::from("b/other.txt"), from[0].clone()])
+            .unwrap();
+        assert_eq!((report.completed, report.failed), (2, 0));
+        assert_eq!(
+            fs::read(root.path().join(&batch).join("b/other.txt")).unwrap(),
+            raw
+        );
+        assert_eq!(
+            fs::read(root.path().join(&batch).join("a/keep.md")).unwrap(),
+            b"old"
+        );
+        assert_eq!(store.list().unwrap().notes.len(), 1);
+        assert!(store.create(&batch.join("hidden.txt")).is_err());
+    }
+
+    #[test]
+    fn trash_refuses_an_existing_file_at_the_recovery_location() {
+        let root = tempfile::tempdir().unwrap();
+        let store = NoteStore::open(root.path()).unwrap();
+        fs::write(root.path().join(TRASH), b"unrelated file").unwrap();
+        fs::write(root.path().join("keep.txt"), b"existing note").unwrap();
+        assert!(store.trash_notes(&[PathBuf::from("keep.txt")]).is_err());
+        assert_eq!(
+            fs::read(root.path().join(TRASH)).unwrap(),
+            b"unrelated file"
+        );
+        assert_eq!(
+            fs::read(root.path().join("keep.txt")).unwrap(),
+            b"existing note"
+        );
     }
 
     #[test]

@@ -22,6 +22,8 @@ pub enum Command {
     Language,
     CheckUpdates,
     UpdateResult,
+    MoveMarked,
+    TrashMarked,
 }
 
 impl Command {
@@ -42,6 +44,8 @@ impl Command {
             Self::Language => "Interface language",
             Self::CheckUpdates => "Check for updates",
             Self::UpdateResult => "Update check result",
+            Self::MoveMarked => "Move marked notes",
+            Self::TrashMarked => "Delete marked notes (recoverable)",
         }
     }
 
@@ -54,6 +58,7 @@ impl Command {
             Self::Undo | Self::Redo => "Editor",
             Self::Help | Self::Quit | Self::Language => "Session",
             Self::CheckUpdates | Self::UpdateResult => "Updates",
+            Self::MoveMarked | Self::TrashMarked => "Notes",
         }
     }
 
@@ -72,6 +77,7 @@ impl Command {
             Self::Undo => "Ctrl+Z",
             Self::Redo => "Ctrl+Y",
             Self::Language | Self::CheckUpdates | Self::UpdateResult => "",
+            Self::MoveMarked | Self::TrashMarked => "",
         }
     }
 
@@ -94,6 +100,8 @@ impl Command {
             Self::Language => "language english russian язык интерфейс английский русский",
             Self::CheckUpdates => "check updates version проверить обновления версия",
             Self::UpdateResult => "update result release результат проверки обновлений релиз",
+            Self::MoveMarked => "bulk move selected notes массовое перемещение переместить выбранные заметки",
+            Self::TrashMarked => "bulk delete trash selected notes массовое удаление удалить выбранные заметки корзина",
         }
     }
     pub fn localized_label(self, language: Language) -> &'static str {
@@ -115,6 +123,8 @@ impl Command {
                 Self::Language => "Язык интерфейса",
                 Self::CheckUpdates => "Проверить обновления",
                 Self::UpdateResult => "Результат проверки обновлений",
+                Self::MoveMarked => "Переместить отмеченные заметки",
+                Self::TrashMarked => "Удалить отмеченные заметки (с восстановлением)",
             },
         )
     }

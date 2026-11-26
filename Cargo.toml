@@ -1,6 +1,6 @@
 [package]
 name = "terminalnote"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "Local Markdown and text notes in your terminal"
 license = "MIT"
@@ -30,7 +30,7 @@ toml = "0.8"
 tui-textarea = "0.7"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security_Authorization"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 portable-pty = "0.9"

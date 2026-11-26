@@ -61,8 +61,8 @@ Specify `.txt` explicitly for a plain-text note.
 
 ## Windows installer
 
-1. Download `terminalnote-v0.1.4-windows-x86_64.zip` and `SHA256SUMS.txt` from
-   [the release page](https://github.com/Andrey89711/TerminalNote/releases/tag/v0.1.4).
+1. Download `terminalnote-v0.1.5-windows-x86_64.zip` and `SHA256SUMS.txt` from
+   [the release page](https://github.com/Andrey89711/TerminalNote/releases/tag/v0.1.5).
 2. Compare the ZIP's `Get-FileHash -Algorithm SHA256` result with the published checksum.
 3. Extract the whole archive, then double-click **`setup.cmd`**. Do not run it from
    inside the ZIP. Rust and administrator permissions are not required.
@@ -154,6 +154,7 @@ first. Relative command paths resolve against the current working directory.
 | `n` | Enter a new note name |
 | `/` | Filter filenames |
 | Ctrl+F | Search names, paths and note text; Enter runs the search |
+| Space / Ctrl+A | Toggle a mark / mark all notes in the current list |
 | `l` | Open internal links; Enter follows the selection |
 | Alt+← | Go back after following a link |
 | `r` | Reload notes from disk |
@@ -183,6 +184,22 @@ save, undo/redo, links, back, reload, focus, language, help and quit. Use ↑/�
 select, Enter or a click to run, and Esc to cancel. Leaving the editor or quitting
 still requires a decision about unsaved changes.
 
+### Bulk actions
+
+With the list focused, press Space to mark individual notes or Ctrl+A to mark
+all notes in the current list. Collapsed folders are not included. To act on
+search results, apply the search with Enter first. Esc clears the marks before
+clearing the filter. Changing the filter or refreshing clears all marks.
+
+In Ctrl+P choose **Move marked notes** or **Delete marked notes (recoverable)**.
+Move takes an existing folder relative to the notes root (`.` for the root)
+and never overwrites a file. Delete requires a confirmation showing the count.
+To recover deleted notes, move them back from
+`.terminalnote-trash/batch-*/` under the notes root; the batch keeps the original
+relative paths. This is a local folder, not the system Recycle Bin.
+A batch can partially succeed: failures such as name collisions are reported
+without undoing successful moves. Internal links are not rewritten.
+
 Click folders to expand/collapse and notes to preview; Enter opens the editor.
 The mouse wheel scrolls navigation or preview. Terminal text selection while mouse
 capture is enabled usually requires holding Shift.
@@ -202,7 +219,7 @@ Russian keyboard characters. Single-letter commands and confirmations use the EN
   folders, files of every extension and skipped entries. A warning indicates truncation.
   The truncated subset depends on filesystem enumeration order; results are then sorted.
   `--list` still prints a plain relative-path list.
-- `.git`, `.hg`, `.svn`, `target`, `node_modules` and symbolic links are skipped.
+- `.git`, `.hg`, `.svn`, `target`, `node_modules`, `.terminalnote-trash` and symbolic links are skipped.
 - UTF-8 `.md` and `.txt` files up to 2 MiB are supported, including UTF-8 BOM and CRLF.
 - Internal links include `[[Ideas]]` and `[checklist](Archive/Checklist.txt)`.
   See [`examples/notes`](examples/notes).

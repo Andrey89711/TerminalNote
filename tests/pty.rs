@@ -301,6 +301,38 @@ fn real_terminal_ctrl_f_finds_a_match_only_in_the_note_body() {
 }
 
 #[test]
+fn real_terminal_moves_selected_search_results_from_the_palette() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join("Archive")).unwrap();
+    fs::write(
+        root.path().join("First.md"),
+        "INITIAL_BULK_PREVIEW\n\nBatchToken\n",
+    )
+    .unwrap();
+    fs::write(root.path().join("Second.txt"), "BatchToken\n").unwrap();
+    fs::write(root.path().join("Other.md"), "keep\n").unwrap();
+    let mut terminal = TerminalSession::spawn(root.path());
+    terminal.expect_since(0, "INITIAL_BULK_PREVIEW");
+    terminal.action(b"\x06", "Search names and note text");
+    terminal.send(b"\x1b[200~batchtoken\x1b[201~");
+    terminal.action(b"\r", "Notes");
+    terminal.action(b"\x01", "Marked: 2");
+    terminal.action(b"\x10", "Commands");
+    terminal.send(b"\x1b[200~move marked\x1b[201~");
+    terminal.action(b"\r", "Notes to move");
+    terminal.send(b"\x1b[200~Archive\x1b[201~");
+    terminal.action(b"\r", "Completed: 2");
+    terminal.quit();
+    assert!(root.path().join("Archive/First.md").is_file());
+    assert!(root.path().join("Archive/Second.txt").is_file());
+    assert!(!root.path().join("First.md").exists());
+    assert_eq!(
+        fs::read_to_string(root.path().join("Other.md")).unwrap(),
+        "keep\n"
+    );
+}
+
+#[test]
 fn real_terminal_external_conflict_retains_edits_and_confirms_discard() {
     let root = tempdir().unwrap();
     let path = root.path().join("First.md");
@@ -392,7 +424,7 @@ fn real_terminal_update_consent_can_be_cancelled_without_a_network_request() {
     terminal.action(b"\x10", "Commands");
     terminal.send(b"\x1b[200~check updates\x1b[201~");
     terminal.action(b"\r", "Send a request to api.github.com?");
-    terminal.action(b"\x1b", "Enter open/edit"); // Wait for dismissal before sending another key.
+    terminal.action(b"\x1b", "Ctrl+P actions"); // Wait for dismissal before sending another key.
     terminal.quit();
     assert_eq!(
         fs::read_to_string(root.path().join("First.md")).unwrap(),

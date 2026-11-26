@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- Mark multiple notes in the tree or search results, then move them without
+  overwriting files or remove them to a recoverable local folder.
+
 ## 0.1.4
 
 - On Windows x64, one approval downloads, verifies, installs and restarts.

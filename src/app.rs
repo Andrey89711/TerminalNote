@@ -40,7 +40,7 @@ const PREVIEW_LINES: usize = 4096;
 const EDITOR_LINES: usize = 50_000;
 
 // Filtering this shared order preserves both Browse and Edit palette ordering.
-const PALETTE_COMMAND_ORDER: [Command; 15] = [
+const PALETTE_COMMAND_ORDER: [Command; 17] = [
     Command::NewNote,
     Command::SearchNotes,
     Command::Refresh,
@@ -56,6 +56,8 @@ const PALETTE_COMMAND_ORDER: [Command; 15] = [
     Command::Quit,
     Command::CheckUpdates,
     Command::UpdateResult,
+    Command::MoveMarked,
+    Command::TrashMarked,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,6 +67,8 @@ enum Mode {
     Search,
     ContentSearch,
     New,
+    BulkMove,
+    BulkTrash,
     Links,
     Confirm { quit: bool },
 }
@@ -102,6 +106,8 @@ impl Overlay {
 
 struct App {
     store: NoteStore,
+    marked: HashSet<PathBuf>,
+    bulk_visible: bool,
     notes: Vec<NoteEntry>,
     visible: Vec<usize>,
     selected: usize,
@@ -148,6 +154,8 @@ impl App {
     fn new(store: NoteStore) -> Result<Self> {
         let mut app = Self {
             store,
+            marked: HashSet::new(),
+            bulk_visible: false,
             notes: Vec::new(),
             visible: Vec::new(),
             selected: 0,
@@ -269,6 +277,7 @@ impl App {
     }
 
     fn filter(&mut self, preferred: Option<PathBuf>) {
+        self.marked.clear();
         let preferred_tree = preferred.clone();
         if self.query.is_empty() {
             self.content_matches = None;
@@ -406,6 +415,7 @@ impl App {
             if !self.expanded.insert(path.clone()) {
                 if toggle {
                     self.expanded.remove(&path);
+                    self.marked.retain(|note| !note.starts_with(&path));
                 } else {
                     let rows = explorer::rows(&self.notes, &self.expanded);
                     let folder = Node::Folder(path);
@@ -430,6 +440,7 @@ impl App {
         };
         if let Node::Folder(path) = &node {
             if self.expanded.remove(path) {
+                self.marked.retain(|note| !note.starts_with(path));
                 return;
             }
         }
@@ -679,6 +690,9 @@ impl App {
             Command::UpdateResult => {
                 matches!(self.mode, Mode::Browse | Mode::Edit) && self.update_result.is_some()
             }
+            Command::MoveMarked | Command::TrashMarked => {
+                self.mode == Mode::Browse && !self.marked.is_empty()
+            }
         }
     }
     fn available_commands(&self) -> Vec<Command> {
@@ -714,6 +728,15 @@ impl App {
         }
         self.palette = None;
         match command {
+            Command::MoveMarked | Command::TrashMarked => {
+                self.mode = if command == Command::MoveMarked {
+                    Mode::BulkMove
+                } else {
+                    Mode::BulkTrash
+                };
+                self.input.clear();
+                self.bulk_visible = false;
+            }
             Command::NewNote => {
                 let parent = match &self.explorer_focus {
                     Some(Node::Folder(path)) if self.query.is_empty() => Some(path.as_path()),
@@ -1056,6 +1079,28 @@ impl App {
             return;
         }
         match self.mode {
+            Mode::BulkMove | Mode::BulkTrash => match key.code {
+                KeyCode::Esc => self.mode = Mode::Browse,
+                KeyCode::Enter
+                    if key.kind == KeyEventKind::Press
+                        && key.modifiers.is_empty()
+                        && self.bulk_visible =>
+                {
+                    self.run_bulk()
+                }
+                KeyCode::Backspace if self.mode == Mode::BulkMove => {
+                    self.input.pop();
+                }
+                KeyCode::Char(c)
+                    if self.mode == Mode::BulkMove
+                        && !ctrl
+                        && !c.is_control()
+                        && self.input.len() + c.len_utf8() <= 1024 =>
+                {
+                    self.input.push(c)
+                }
+                _ => {}
+            },
             Mode::Edit => {
                 if key.code == KeyCode::Esc {
                     self.execute_command(Command::Back);
@@ -1127,6 +1172,20 @@ impl App {
                 _ => {}
             },
             Mode::Browse => match key.code {
+                KeyCode::Char(' ')
+                    if key.modifiers.is_empty()
+                        && !self.preview_focus
+                        && key.kind == KeyEventKind::Press =>
+                {
+                    if let Some(path) = self.selected_path() {
+                        if !self.marked.remove(&path) {
+                            self.marked.insert(path);
+                        }
+                    }
+                }
+                KeyCode::Char('a' | 'A' | 'ф' | 'Ф') if ctrl && !self.preview_focus => {
+                    self.mark_all()
+                }
                 KeyCode::Char('q') => self.execute_command(Command::Quit),
                 KeyCode::Up if self.preview_focus => self.scroll = self.scroll.saturating_sub(1),
                 KeyCode::Down if self.preview_focus => self.scroll = self.scroll.saturating_add(1),
@@ -1170,8 +1229,12 @@ impl App {
                 KeyCode::Char('n') => self.execute_command(Command::NewNote),
                 KeyCode::Char('/') => self.execute_command(Command::SearchNotes),
                 KeyCode::Esc => {
-                    self.query.clear();
-                    self.filter(None);
+                    if self.marked.is_empty() {
+                        self.query.clear();
+                        self.filter(None);
+                    } else {
+                        self.marked.clear();
+                    }
                 }
                 KeyCode::Char('l') => self.execute_command(Command::OpenLinks),
                 KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -1181,6 +1244,95 @@ impl App {
                 KeyCode::Char('?') => self.execute_command(Command::Help),
                 _ => {}
             },
+        }
+    }
+
+    fn mark_all(&mut self) {
+        self.marked = if self.query.is_empty() {
+            explorer::rows(&self.notes, &self.expanded)
+                .into_iter()
+                .filter_map(|row| match row.node {
+                    Node::Note(path) => Some(path),
+                    Node::Folder(_) => None,
+                })
+                .collect()
+        } else {
+            self.visible
+                .iter()
+                .map(|&i| self.notes[i].path.clone())
+                .collect()
+        };
+    }
+
+    fn mark_summary(&self) -> String {
+        if self.marked.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " · {}: {}",
+                self.tr("Marked", "Отмечено"),
+                self.marked.len()
+            )
+        }
+    }
+
+    fn run_bulk(&mut self) {
+        let mut paths: Vec<_> = self.marked.iter().cloned().collect();
+        paths.sort();
+        let result = if self.mode == Mode::BulkTrash {
+            self.store
+                .trash_notes(&paths)
+                .map(|(location, report)| (Some(location), report))
+        } else {
+            if self.input.is_empty() {
+                self.message(
+                    self.tr(
+                        "Enter an existing folder or . for the root",
+                        "Введите существующую папку или . для корня",
+                    ),
+                    true,
+                );
+                return;
+            }
+            let folder = if self.input == "." {
+                ""
+            } else {
+                self.input.as_str()
+            };
+            self.store
+                .move_notes(&paths, Path::new(folder))
+                .map(|report| (None, report))
+        };
+        match result {
+            Ok((location, report)) => {
+                self.mode = Mode::Browse;
+                self.marked.clear();
+                if self.content_matches.is_some() {
+                    self.query.clear();
+                }
+                let refresh_error = self.refresh(None).err();
+                let mut message = format!(
+                    "{}: {}; {}: {}",
+                    self.tr("Completed", "Выполнено"),
+                    report.completed,
+                    self.tr("Failed", "Ошибок"),
+                    report.failed
+                );
+                if let Some(folder) = location {
+                    message.push_str(&format!(
+                        " · {}: {}",
+                        self.tr("Recovery", "Восстановление"),
+                        folder.display()
+                    ));
+                }
+                if let Some(error) = report.first_error.or(refresh_error) {
+                    message.push_str(&format!(" · {error}"));
+                    self.message(message, true);
+                } else {
+                    self.message(message, false);
+                }
+            }
+            Err(error) => self.message(error.to_string(), true),
         }
     }
 
@@ -1259,7 +1411,10 @@ impl App {
             palette.paste(&text);
             return;
         }
-        if matches!(self.mode, Mode::Search | Mode::ContentSearch | Mode::New) {
+        if matches!(
+            self.mode,
+            Mode::Search | Mode::ContentSearch | Mode::New | Mode::BulkMove
+        ) {
             if !editable(&text)
                 || text.contains(['\n', '\r', '\t'])
                 || self.input.len().saturating_add(text.len()) > 1024
@@ -1386,9 +1541,10 @@ impl App {
             .position(|row| Some(&row.node) == self.explorer_focus.as_ref());
         let block = panel(
             &format!(
-                " {} · {} ",
+                " {} · {}{} ",
                 self.tr("Explorer", "Проводник"),
-                self.notes.len()
+                self.notes.len(),
+                self.mark_summary(),
             ),
             !self.preview_focus,
         )
@@ -1405,6 +1561,7 @@ impl App {
                             "▸ ▰ "
                         }
                     }
+                    Node::Note(path) if self.marked.contains(path) => "  ✓ ",
                     Node::Note(_) => "  · ",
                 };
                 ListItem::new(Line::from(vec![
@@ -1632,6 +1789,7 @@ impl App {
         self.palette_visible = true;
     }
     fn draw(&mut self, frame: &mut Frame) {
+        self.bulk_visible = false;
         self.dirty_consent_visible = false;
         if let Some(overlay) = &mut self.overlay {
             overlay.visible = false;
@@ -1734,12 +1892,25 @@ impl App {
                 let items: Vec<ListItem> = self
                     .visible
                     .iter()
-                    .map(|i| ListItem::new(crate::safe(&self.notes[*i].path.to_string_lossy())))
+                    .map(|i| {
+                        let path = &self.notes[*i].path;
+                        let label = crate::safe(&path.to_string_lossy());
+                        ListItem::new(if self.marked.contains(path) {
+                            format!("✓ {label}")
+                        } else {
+                            label
+                        })
+                    })
                     .collect();
                 let list = List::new(items)
                     .block(
                         panel(
-                            &format!(" {} · {} ", self.tr("Notes", "Заметки"), self.visible.len()),
+                            &format!(
+                                " {} · {}{} ",
+                                self.tr("Notes", "Заметки"),
+                                self.visible.len(),
+                                self.mark_summary()
+                            ),
                             !self.preview_focus,
                         )
                         .padding(Padding::new(0, 0, 1, 0)),
@@ -1795,8 +1966,8 @@ impl App {
             self.tr(" Ctrl+P commands · Ctrl+S save · Esc back · Ctrl+Z undo · Ctrl+Y redo · Ctrl+Q quit ", " Ctrl+P команды · Ctrl+S сохранить · Esc назад · Ctrl+Z отменить · Ctrl+Y повторить · Ctrl+Q выход ")
         } else {
             self.tr(
-                " Ctrl+F search text · Ctrl+P commands · ↑↓ select · ←→ folders · Enter open/edit ",
-                " Ctrl+F поиск по тексту · Ctrl+P команды · ↑↓ выбор · ←→ папки · Enter открыть ",
+                " Space mark · Ctrl+A mark all · Ctrl+P actions · Ctrl+F search ",
+                " Space отметить · Ctrl+A отметить всё · Ctrl+P действия · Ctrl+F поиск ",
             )
         };
         frame.render_widget(Paragraph::new(help).style(theme::dim()), parts[2]);
@@ -1861,6 +2032,55 @@ impl App {
             None => {}
         }
         match self.mode {
+            Mode::BulkMove | Mode::BulkTrash => {
+                let count = self.marked.len();
+                let (title, text) = if self.mode == Mode::BulkTrash {
+                    (
+                        self.tr(" Delete marked notes ", " Удалить отмеченные заметки "),
+                        format!(
+                            "{}: {count}\n{}\n\n{}",
+                            self.tr(
+                                "Notes to remove from the list",
+                                "Заметок будет убрано из списка"
+                            ),
+                            self.tr(
+                                "Recoverable in .terminalnote-trash under the notes root.",
+                                "Для восстановления откройте .terminalnote-trash в корне заметок."
+                            ),
+                            self.tr(
+                                "Enter — move to recovery folder · Esc — cancel",
+                                "Enter — в папку восстановления · Esc — отмена"
+                            ),
+                        ),
+                    )
+                } else {
+                    (self.tr(" Move marked notes ", " Переместить отмеченные заметки "), format!(
+                        "{}: {count}\n{}\n{}▏\n\n{}",
+                        self.tr("Notes to move", "Заметок будет перемещено"),
+                        self.tr("Existing relative folder (. for root). Never overwrites.", "Существующая папка относительно корня (. — корень). Без перезаписи."),
+                        crate::safe(&self.input),
+                        self.tr("Enter — move · Esc — cancel", "Enter — переместить · Esc — отмена"),
+                    ))
+                };
+                let height = Paragraph::new(text.as_str())
+                    .wrap(Wrap { trim: false })
+                    .line_count(area.width.min(82).saturating_sub(2))
+                    + 2;
+                if height <= usize::from(area.height.saturating_sub(2)) {
+                    popup(frame, &text, title, height as u16);
+                    self.bulk_visible = true;
+                } else {
+                    popup(
+                        frame,
+                        self.tr(
+                            "Resize to see the full action. Esc cancels.",
+                            "Увеличьте окно. Esc — отмена.",
+                        ),
+                        title,
+                        5,
+                    );
+                }
+            }
             Mode::ContentSearch => {
                 let hint = if self.search_job.is_some() {
                     self.tr("Searching… Esc cancels", "Поиск… Esc — отмена")
@@ -2239,6 +2459,68 @@ mod tests {
     }
     pub(super) fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn collapsing_a_folder_removes_its_marks_but_keeps_marks_elsewhere() {
+        let (root, mut app) = app();
+        std::fs::create_dir(root.path().join("Nested")).unwrap();
+        std::fs::write(root.path().join("Nested/Inside.txt"), "inside").unwrap();
+        app.refresh(None).unwrap();
+        let folder = PathBuf::from("Nested");
+        app.explorer_focus = Some(Node::Folder(folder.clone()));
+        app.open_explorer(true);
+        app.mark_all();
+        assert!(app.marked.contains(Path::new("Nested/Inside.txt")));
+        assert!(app.marked.contains(Path::new("First.md")));
+        app.open_explorer(true);
+        assert!(!app.marked.contains(Path::new("Nested/Inside.txt")));
+        assert!(app.marked.contains(Path::new("First.md")));
+    }
+
+    #[test]
+    fn bulk_selection_targets_only_visible_search_results_and_requires_delete_confirmation() {
+        let (root, mut app) = app();
+        std::fs::create_dir(root.path().join("Nested")).unwrap();
+        std::fs::write(root.path().join("First.md"), "same body token").unwrap();
+        std::fs::write(root.path().join("Nested/Second.txt"), "same body token").unwrap();
+        std::fs::write(root.path().join("Other.txt"), "unrelated").unwrap();
+        app.refresh(Some("First.md".into())).unwrap();
+        let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        app.key(ctrl_a);
+        assert!(!app.marked.contains(Path::new("Nested/Second.txt")));
+        app.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        app.paste("same body token".into());
+        app.key(key(KeyCode::Enter));
+        let until = Instant::now() + Duration::from_secs(5);
+        while !app.poll_content_search() {
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        assert!(app.marked.is_empty());
+        app.key(ctrl_a);
+        assert_eq!(app.marked.len(), 2);
+        assert!(!app.marked.contains(Path::new("Other.txt")));
+        app.key(key(KeyCode::Char(' ')));
+        assert_eq!(app.marked.len(), 1);
+        app.key(key(KeyCode::Char(' ')));
+        app.key(key(KeyCode::Esc));
+        assert_eq!(app.query, "same body token");
+        assert!(app.marked.is_empty());
+        app.key(ctrl_a);
+        app.execute_command(Command::TrashMarked);
+        rendered(&mut app, 24, 6);
+        app.key(key(KeyCode::Enter));
+        assert!(root.path().join("First.md").is_file());
+        app.key(key(KeyCode::Esc));
+        assert!(!root.path().join(crate::storage::TRASH).exists());
+        app.execute_command(Command::TrashMarked);
+        rendered(&mut app, 120, 45);
+        app.key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Browse);
+        assert!(!root.path().join("First.md").exists());
+        assert!(!root.path().join("Nested/Second.txt").exists());
+        assert!(root.path().join("Other.txt").is_file());
     }
     #[test]
     fn ctrl_f_finds_note_text_and_paths_but_slash_still_filters_only_paths() {
